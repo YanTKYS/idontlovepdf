@@ -54,5 +54,5 @@ engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は�
 
 ## 補足
 
-- v0.2.0 の型定義（engine側 `src/index.d.ts`）では `listTextRuns()` に引数が宣言されていないが、実装・bundleともに `listTextRuns(password)` を受け付ける。本体側の暗号化PDF対応はこの引数を利用している。型定義側の追随は engine 側の課題として扱う。
+- v0.2.0 の型定義（engine側 `src/index.d.ts`）では `listTextRuns()` に引数が宣言されていないが、実装・bundleともに `listTextRuns(password)` を受け付ける。本体側の暗号化PDF対応はこの引数を利用している。本体はJavaScriptのため動作上の問題は無いが、engineの次回版で `password?: string` へ型定義を合わせる（engine側の課題）。
 - v0.2.0 の公開APIには `/P` permission（読み取り可否・変更可否）を取得する手段が無い。permission表示が必要になった場合は、engine側の公開API拡張として扱う。本体側からengine内部フィールドを参照して表示することはしない。

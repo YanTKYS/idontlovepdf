@@ -3,1061 +3,178 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>idontlovepdf 検討状況ダッシュボード</title>
-  <meta name="description" content="自治体向けPDF本文テキスト編集ツールの検討状況。現在の判定は「実現可能性あり（PoC未実施）」。技術的実現性は条件付きで可能、庁内での運用可否は未判定。">
-  <style>
-    :root {
-      --ink:        #1f2933;
-      --ink-soft:   #52606d;
-      --ink-faint:  #7b8794;
-      --rule:       #d8dee4;
-      --rule-soft:  #e8ecf0;
-      --paper:      #ffffff;
-      --ground:     #f4f6f8;
-      --band:       #fbfcfd;
-      --accent:     #1f4e79;
-      --ok:         #1e6b45;
-      --ok-bg:      #eef6f1;
-      --warn:       #8a5a00;
-      --warn-bg:    #fdf6e7;
-      --no:         #8d3b3b;
-      --no-bg:      #fbefef;
-      --pend:       #8a5a00;
-      --pend-bg:    #fdf6e7;
-      --pend-line:  #e0cfa4;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html {
-      -webkit-text-size-adjust: 100%;
-    }
-
-    body {
-      margin: 0;
-      padding: 0;
-      background: var(--ground);
-      color: var(--ink);
-      font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, "Yu Gothic UI", "Noto Sans JP", system-ui, -apple-system, "Segoe UI", sans-serif;
-      font-size: 16px;
-      line-height: 1.75;
-      font-feature-settings: "palt" 1;
-    }
-
-    .wrap {
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 0 20px 72px;
-    }
-
-    /* ---------- ヘッダー ---------- */
-
-    .masthead {
-      background: var(--paper);
-      border-bottom: 1px solid var(--rule);
-      padding: 40px 0 32px;
-      margin-bottom: 32px;
-    }
-
-    .masthead .wrap {
-      padding-bottom: 0;
-    }
-
-    .eyebrow {
-      font-size: 0.8125rem;
-      letter-spacing: 0.14em;
-      color: var(--ink-faint);
-      margin: 0 0 10px;
-    }
-
-    h1 {
-      font-size: 2.125rem;
-      line-height: 1.3;
-      margin: 0 0 6px;
-      letter-spacing: 0.01em;
-    }
-
-    h1 .repo {
-      display: block;
-      font-size: 1.125rem;
-      font-weight: 400;
-      color: var(--ink-soft);
-      letter-spacing: 0.04em;
-      margin-top: 4px;
-    }
-
-    .subtitle {
-      margin: 14px 0 0;
-      color: var(--ink-soft);
-      font-size: 0.9375rem;
-    }
-
-    /* ---------- ステータス帯 ---------- */
-
-    .status {
-      margin-top: 26px;
-      border: 2px solid var(--pend);
-      border-left-width: 8px;
-      border-radius: 4px;
-      background: var(--pend-bg);
-      padding: 20px 24px;
-    }
-
-    .status-head {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-bottom: 4px;
-    }
-
-    .status-label {
-      font-size: 0.8125rem;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      color: var(--pend);
-      margin: 0;
-    }
-
-    .status-chip {
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      color: var(--pend);
-      background: var(--paper);
-      border: 1px solid var(--pend);
-      border-radius: 3px;
-      padding: 1px 9px;
-    }
-
-    .status-value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      margin: 0;
-      color: var(--ink);
-      line-height: 1.4;
-    }
-
-    .split {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px;
-      background: var(--pend-line);
-      border: 1px solid var(--pend-line);
-      border-radius: 4px;
-      overflow: hidden;
-      margin-top: 16px;
-    }
-
-    .split-item {
-      background: var(--paper);
-      padding: 12px 16px;
-    }
-
-    .split-item dt {
-      font-size: 0.8125rem;
-      color: var(--ink-faint);
-      letter-spacing: 0.04em;
-      margin: 0 0 2px;
-    }
-
-    .split-item dd {
-      margin: 0;
-      font-size: 1.125rem;
-      font-weight: 700;
-      line-height: 1.4;
-    }
-
-    .split-item dd .sub {
-      display: block;
-      font-size: 0.8125rem;
-      font-weight: 400;
-      color: var(--ink-soft);
-      margin-top: 2px;
-    }
-
-    .status-note {
-      margin: 16px 0 0;
-      font-size: 0.9375rem;
-      color: var(--ink-soft);
-      border-top: 1px solid var(--pend-line);
-      padding-top: 12px;
-    }
-
-    .status-caveat {
-      margin: 10px 0 0;
-      font-size: 0.875rem;
-      color: var(--ink-soft);
-    }
-
-    .status-caveat strong {
-      color: var(--ink);
-    }
-
-    /* ---------- セクション ---------- */
-
-    section {
-      background: var(--paper);
-      border: 1px solid var(--rule);
-      border-radius: 4px;
-      padding: 28px 28px 30px;
-      margin-bottom: 24px;
-    }
-
-    h2 {
-      font-size: 1.25rem;
-      margin: 0 0 4px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid var(--rule);
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-    }
-
-    h2 .num {
-      font-size: 0.8125rem;
-      font-weight: 700;
-      color: var(--paper);
-      background: var(--accent);
-      border-radius: 3px;
-      padding: 2px 9px;
-      letter-spacing: 0.05em;
-      flex: 0 0 auto;
-    }
-
-    .lede {
-      color: var(--ink-soft);
-      font-size: 0.9375rem;
-      margin: 16px 0 20px;
-    }
-
-    /* ---------- 現在地点カード ---------- */
-
-    .facts {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 1px;
-      background: var(--rule-soft);
-      border: 1px solid var(--rule-soft);
-      border-radius: 4px;
-      overflow: hidden;
-      margin-top: 20px;
-    }
-
-    .fact {
-      background: var(--band);
-      padding: 16px 18px;
-    }
-
-    .fact dt {
-      font-size: 0.8125rem;
-      color: var(--ink-faint);
-      margin: 0 0 4px;
-      letter-spacing: 0.04em;
-    }
-
-    .fact dd {
-      margin: 0;
-      font-size: 1.0625rem;
-      font-weight: 700;
-      line-height: 1.45;
-    }
-
-    .fact dd .sub {
-      display: block;
-      font-size: 0.8125rem;
-      font-weight: 400;
-      color: var(--ink-soft);
-      margin-top: 2px;
-    }
-
-    /* ---------- タイムライン ---------- */
-
-    .stages {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 22px;
-      margin-top: 20px;
-    }
-
-    .stage {
-      border: 1px solid var(--rule);
-      border-radius: 4px;
-      padding: 20px;
-      background: var(--band);
-    }
-
-    .stage-head {
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
-      margin-bottom: 4px;
-    }
-
-    .stage-tag {
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      padding: 2px 8px;
-      border-radius: 3px;
-      border: 1px solid var(--ink-faint);
-      color: var(--ink-soft);
-    }
-
-    .stage h3 {
-      font-size: 1.0625rem;
-      margin: 0;
-    }
-
-    .steps {
-      list-style: none;
-      margin: 16px 0 0;
-      padding: 0;
-    }
-
-    .steps li {
-      position: relative;
-      padding: 0 0 0 26px;
-      margin: 0 0 14px;
-      font-size: 0.9375rem;
-      line-height: 1.6;
-    }
-
-    .steps li::before {
-      content: "";
-      position: absolute;
-      left: 7px;
-      top: 9px;
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      border: 2px solid var(--ink-faint);
-      background: var(--paper);
-    }
-
-    .steps li::after {
-      content: "";
-      position: absolute;
-      left: 11px;
-      top: 20px;
-      width: 2px;
-      height: calc(100% - 6px);
-      background: var(--rule);
-    }
-
-    .steps li:last-child {
-      margin-bottom: 0;
-    }
-
-    .steps li:last-child::after {
-      display: none;
-    }
-
-    .steps li.verdict {
-      font-weight: 700;
-      padding-top: 4px;
-    }
-
-    .steps li.verdict::before {
-      border-color: var(--ink);
-      background: var(--ink);
-      top: 13px;
-    }
-
-    .verdict-no {
-      display: inline-block;
-      background: var(--no-bg);
-      color: var(--no);
-      border: 1px solid var(--no);
-      border-radius: 3px;
-      padding: 2px 10px;
-    }
-
-    .verdict-maybe {
-      display: inline-block;
-      background: var(--pend-bg);
-      color: var(--pend);
-      border: 1px solid var(--pend);
-      border-radius: 3px;
-      padding: 2px 10px;
-    }
-
-    .takeaway {
-      margin-top: 22px;
-      border-left: 4px solid var(--accent);
-      background: var(--band);
-      padding: 16px 20px;
-      font-size: 0.9375rem;
-    }
-
-    .takeaway p {
-      margin: 0;
-    }
-
-    .takeaway p + p {
-      margin-top: 8px;
-    }
-
-    /* ---------- 表 ---------- */
-
-    .table-scroll {
-      overflow-x: auto;
-      margin-top: 20px;
-      border: 1px solid var(--rule);
-      border-radius: 4px;
-    }
-
-    table {
-      border-collapse: collapse;
-      width: 100%;
-      min-width: 620px;
-      font-size: 0.9375rem;
-    }
-
-    th, td {
-      text-align: left;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--rule-soft);
-      vertical-align: top;
-    }
-
-    thead th {
-      background: var(--band);
-      font-size: 0.8125rem;
-      letter-spacing: 0.04em;
-      color: var(--ink-soft);
-      border-bottom: 1px solid var(--rule);
-      white-space: nowrap;
-    }
-
-    tbody tr:last-child td {
-      border-bottom: none;
-    }
-
-    td.name {
-      font-weight: 700;
-      white-space: nowrap;
-    }
-
-    .mark {
-      display: inline-block;
-      min-width: 2.2em;
-      text-align: center;
-      font-weight: 700;
-      border-radius: 3px;
-      padding: 1px 8px;
-      font-size: 0.875rem;
-      border: 1px solid;
-    }
-
-    .mark-yes {
-      color: var(--ok);
-      background: var(--ok-bg);
-      border-color: var(--ok);
-    }
-
-    .mark-no {
-      color: var(--no);
-      background: var(--no-bg);
-      border-color: var(--no);
-    }
-
-    .mark-part {
-      color: var(--warn);
-      background: var(--warn-bg);
-      border-color: var(--warn);
-    }
-
-    .rank {
-      display: inline-block;
-      font-weight: 700;
-      font-size: 0.875rem;
-      border-radius: 3px;
-      padding: 1px 9px;
-      border: 1px solid var(--accent);
-      color: var(--accent);
-      background: #eef3f8;
-      white-space: nowrap;
-    }
-
-    .rank-plain {
-      border-color: var(--rule);
-      color: var(--ink-soft);
-      background: var(--band);
-    }
-
-    .table-notes {
-      margin: 16px 0 0;
-      padding: 0 0 0 1.2em;
-      font-size: 0.875rem;
-      color: var(--ink-soft);
-    }
-
-    .table-notes li {
-      margin-bottom: 6px;
-    }
-
-    /* ---------- 未確認事項 ---------- */
-
-    .unknowns {
-      list-style: none;
-      margin: 20px 0 0;
-      padding: 0;
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1px;
-      background: var(--rule-soft);
-      border: 1px solid var(--rule-soft);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-
-    .unknowns li {
-      background: var(--paper);
-      padding: 14px 18px;
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-      font-size: 0.9375rem;
-    }
-
-    .unknowns li:last-child:nth-child(odd) {
-      grid-column: 1 / -1;
-    }
-
-    .badge-unknown {
-      flex: 0 0 auto;
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: var(--warn);
-      background: var(--warn-bg);
-      border: 1px solid var(--warn);
-      border-radius: 3px;
-      padding: 1px 7px;
-      margin-top: 3px;
-      white-space: nowrap;
-    }
-
-    /* ---------- 次にやること ---------- */
-
-    .next-banner {
-      border: 2px solid var(--accent);
-      border-radius: 4px;
-      background: #eef3f8;
-      padding: 22px 24px;
-      margin-top: 20px;
-    }
-
-    .next-banner .kicker {
-      margin: 0 0 4px;
-      font-size: 0.8125rem;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      color: var(--accent);
-    }
-
-    .next-banner .headline {
-      margin: 0;
-      font-size: 1.375rem;
-      font-weight: 700;
-      line-height: 1.45;
-    }
-
-    .next-banner .state {
-      margin: 12px 0 0;
-      font-size: 0.875rem;
-      color: var(--ink-soft);
-      border-top: 1px solid #c9d7e4;
-      padding-top: 12px;
-    }
-
-    .outcomes {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 14px;
-      margin-top: 20px;
-    }
-
-    .outcome {
-      border: 1px solid var(--rule);
-      border-radius: 4px;
-      padding: 14px 16px;
-      background: var(--band);
-      font-size: 0.9375rem;
-    }
-
-    .outcome strong {
-      display: block;
-      margin-bottom: 2px;
-    }
-
-    .outcome span {
-      color: var(--ink-soft);
-      font-size: 0.875rem;
-    }
-
-    /* ---------- リンク ---------- */
-
-    .docs {
-      list-style: none;
-      margin: 20px 0 0;
-      padding: 0;
-    }
-
-    .docs li + li {
-      margin-top: 10px;
-    }
-
-    .docs a {
-      display: block;
-      border: 1px solid var(--rule);
-      border-radius: 4px;
-      padding: 14px 18px;
-      text-decoration: none;
-      color: inherit;
-      background: var(--band);
-    }
-
-    .docs a:hover,
-    .docs a:focus {
-      border-color: var(--accent);
-      background: #eef3f8;
-    }
-
-    .docs .path {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-weight: 700;
-      color: var(--accent);
-      font-size: 0.9375rem;
-    }
-
-    .docs .what {
-      display: block;
-      font-size: 0.875rem;
-      color: var(--ink-soft);
-      margin-top: 2px;
-    }
-
-    /* ---------- フッター ---------- */
-
-    footer {
-      margin-top: 32px;
-      padding-top: 20px;
-      border-top: 1px solid var(--rule);
-      font-size: 0.8125rem;
-      color: var(--ink-faint);
-    }
-
-    footer p {
-      margin: 0 0 6px;
-    }
-
-    /* ---------- レスポンシブ ---------- */
-
-    @media (max-width: 760px) {
-      body {
-        font-size: 15px;
-      }
-
-      h1 {
-        font-size: 1.625rem;
-      }
-
-      section {
-        padding: 22px 18px 24px;
-      }
-
-      .facts,
-      .split,
-      .stages,
-      .unknowns,
-      .outcomes {
-        grid-template-columns: 1fr;
-      }
-
-      .status-value {
-        font-size: 1.25rem;
-      }
-
-      .next-banner .headline {
-        font-size: 1.125rem;
-      }
-    }
-
-    /* ---------- 印刷 ---------- */
-
-    @media print {
-      body {
-        background: #fff;
-        font-size: 10.5pt;
-        line-height: 1.6;
-      }
-
-      .wrap {
-        max-width: none;
-        padding: 0;
-      }
-
-      .masthead {
-        padding: 0 0 12px;
-        margin-bottom: 16px;
-      }
-
-      section {
-        border: 1px solid #999;
-        padding: 14px;
-        margin-bottom: 12px;
-        break-inside: avoid;
-        page-break-inside: avoid;
-      }
-
-      .status,
-      .next-banner {
-        break-inside: avoid;
-        page-break-inside: avoid;
-      }
-
-      .table-scroll {
-        overflow: visible;
-      }
-
-      table {
-        min-width: 0;
-      }
-
-      .docs a {
-        border: none;
-        padding: 2px 0;
-        background: none;
-      }
-
-      .docs a::after {
-        content: " (" attr(href) ")";
-        font-size: 9pt;
-        color: #555;
-      }
-    }
-  </style>
+  <title>PDF編集ツール</title>
+  <meta name="description" content="PDFをブラウザ内で読み込み、本文テキストを認識する最小構成のツール。選択したPDFは外部へ送信されません。">
+  <!-- 既定のfavicon要求（外部・同一origin問わず）を発生させない -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
 
-  <header class="masthead">
-    <div class="wrap">
-      <p class="eyebrow">検討状況ダッシュボード</p>
+<main class="tool">
 
-      <h1>
-        PDF編集ツール
-        <span class="repo">idontlovepdf</span>
-      </h1>
+  <h1 class="tool__title">PDF編集ツール</h1>
 
-      <p class="subtitle">
-        自治体内で一般職員が利用することを想定した、既存PDF本文テキスト編集ツールの実現可能性検討。
-      </p>
+  <p class="tool__lead">
+    選択したPDFは外部へ送信されず、ブラウザ内で処理します。
+  </p>
 
-      <div class="status">
-        <div class="status-head">
-          <p class="status-label">現在の判定</p>
-          <span class="status-chip">検証待ち</span>
-        </div>
+  <!-- ------------------------------------------------ 起動できなかった場合 -->
 
-        <p class="status-value">実現可能性あり（PoC未実施）</p>
+  <p class="boot-error" id="boot-error" hidden>
+    処理エンジンを読み込めませんでした。
+    このページは静的Webサーバー（GitHub Pages、IIS等）から開いてください。
+  </p>
 
-        <dl class="split">
-          <div class="split-item">
-            <dt>技術的実現性</dt>
-            <dd>条件付きで可能<span class="sub">商用Web PDF SDK利用時</span></dd>
-          </div>
-          <div class="split-item">
-            <dt>運用可否</dt>
-            <dd>未判定<span class="sub">実機検証を行っていない</span></dd>
-          </div>
-        </dl>
+  <!-- ------------------------------------------------------------ 入力 -->
 
-        <p class="status-note">
-          商用Web PDF SDKを利用すれば当初要件を満たせる可能性がある。庁内運用可否は未判定。
-          OSSのみでは、既存PDF本文の直接編集を安定運用することは困難。
-        </p>
+  <section class="picker" id="picker" aria-labelledby="picker-title">
 
-        <p class="status-caveat">
-          <strong>このページは検討状況の記録であり、PDF編集ツールそのものではありません。</strong>
-          ツール本体は未実装（PoC未実施 / 本番実装未着手）です。
-        </p>
-      </div>
-    </div>
-  </header>
+    <h2 class="visually-hidden" id="picker-title">PDFの選択</h2>
 
-  <div class="wrap">
+    <label class="picker__button" for="pdf-input">PDFを選択</label>
 
-    <!-- 1. 現在地点 -->
-    <section id="current">
-      <h2><span class="num">1</span>現在地点</h2>
+    <input
+      class="visually-hidden"
+      type="file"
+      id="pdf-input"
+      accept="application/pdf,.pdf">
 
-      <p class="lede">
-        いま何がどこまで決まっているか。
-      </p>
+    <p class="picker__hint">
+      このエリアにPDFをドラッグ＆ドロップすることもできます。
+    </p>
 
-      <dl class="facts">
-        <div class="fact">
-          <dt>フェーズ</dt>
-          <dd>調査完了<span class="sub">PoC未実施 / 本番実装未着手</span></dd>
-        </div>
-        <div class="fact">
-          <dt>技術的実現性</dt>
-          <dd>条件付きで可能<span class="sub">公式ドキュメント上の確認のみ</span></dd>
-        </div>
-        <div class="fact">
-          <dt>運用可否</dt>
-          <dd>未判定<span class="sub">日本語編集品質・閉域条件が未確認</span></dd>
-        </div>
-        <div class="fact">
-          <dt>第一候補</dt>
-          <dd>Apryse WebViewer<span class="sub">Content Edit 機能</span></dd>
-        </div>
-        <div class="fact">
-          <dt>第二候補</dt>
-          <dd>Foxit PDF SDK for Web<span class="sub">Edit モジュール</span></dd>
-        </div>
-        <div class="fact">
-          <dt>次の判断</dt>
-          <dd>実PDFによるPoC<span class="sub">日本語PDFで検証する</span></dd>
-        </div>
-      </dl>
-    </section>
+  </section>
 
-    <!-- 2. 判断が変わった理由 -->
-    <section id="change">
-      <h2><span class="num">2</span>判断が変わった理由</h2>
+  <!-- ------------------------------------------------------------ 状態 -->
 
-      <p class="lede">
-        このリポジトリで最も重要な情報。一度「運用困難」と判断した後、調査範囲を広げて判定を変更した。
-      </p>
+  <p class="state" id="state" role="status" aria-live="polite">
+    <span class="state__label">状態</span>
+    <span class="state__value" id="state-value">未選択</span>
+  </p>
 
-      <div class="stages">
+  <!-- ------------------------------------------------------------ 結果 -->
 
-        <div class="stage">
-          <div class="stage-head">
-            <span class="stage-tag">初回</span>
-            <h3>OSS中心の検討</h3>
-          </div>
+  <section class="result" id="result" aria-labelledby="result-title" hidden>
 
-          <ol class="steps">
-            <li>PDF.js / pdf-lib 等のOSS JavaScriptライブラリを中心に調査</li>
-            <li>表示・生成・テキスト追加・注釈・フォーム入力は可能</li>
-            <li>既存PDF本文の直接編集は、事実上レイアウトエンジンの自作が必要で困難</li>
-            <li class="verdict"><span class="verdict-no">運用困難と判断</span></li>
-          </ol>
-        </div>
+    <h2 class="visually-hidden" id="result-title">読み込み結果</h2>
 
-        <div class="stage">
-          <div class="stage-head">
-            <span class="stage-tag">再検討</span>
-            <h3>商用SDKまで範囲拡大</h3>
-          </div>
+    <dl class="result__list">
 
-          <ol class="steps">
-            <li>「既存ライブラリ利用前提でも本当に不可能か」を再確認</li>
-            <li>OSSに限らず、商用JS/WASM SDKまで調査範囲を拡大</li>
-            <li>既存本文を直接編集できるSDKが製品機能として存在することを確認</li>
-            <li class="verdict"><span class="verdict-maybe">実現可能性ありへ変更</span></li>
-          </ol>
-        </div>
+      <dt>ファイル</dt>
+      <dd id="result-file">—</dd>
 
-      </div>
+      <dt>Engine</dt>
+      <dd id="result-engine">—</dd>
 
-      <div class="takeaway">
-        <p>
-          <strong>「以前の判断が間違っていた」という話ではない。</strong>
-          OSS中心の調査範囲では、実際に運用困難だった。
-        </p>
-        <p>
-          調査範囲を商用JS/WASM SDKまで広げたことで、実現可能性が見つかった。
-          初回判定は「調査範囲に対しては正しかったが、調査範囲そのものが狭かった」と整理する。
-        </p>
-        <p>
-          ただし、ここで変わったのは<strong>技術的実現性の見通し</strong>であって、庁内での運用可否ではない。
-          運用可否は依然として<strong>未判定</strong>である。
-        </p>
-        <p>
-          今後「できない」と判断するときは、それが<strong>技術の限界か、調査範囲の限界か</strong>を必ず区別する。
-        </p>
-      </div>
-    </section>
+      <dt>読み込み</dt>
+      <dd id="result-load">—</dd>
 
-    <!-- 3. 候補比較 -->
-    <section id="candidates">
-      <h2><span class="num">3</span>候補比較</h2>
+      <dt>本文</dt>
+      <dd id="result-text">—</dd>
 
-      <p class="lede">
-        「本文直接編集」は、既存PDF内の文字を選択して修正・削除・置換できることを指す。
-        テキスト追記、注釈追加、白塗り＋重ね書きは含めない。
-      </p>
+    </dl>
 
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">候補</th>
-              <th scope="col">本文直接編集</th>
-              <th scope="col">静的Web適合</th>
-              <th scope="col">費用</th>
-              <th scope="col">現在の扱い</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="name">PDF.js</td>
-              <td><span class="mark mark-no">×</span> 不可</td>
-              <td><span class="mark mark-yes">○</span> 適合</td>
-              <td>OSS</td>
-              <td><span class="rank rank-plain">表示用途</span></td>
-            </tr>
-            <tr>
-              <td class="name">pdf-lib</td>
-              <td><span class="mark mark-no">×</span> 不可</td>
-              <td><span class="mark mark-yes">○</span> 適合</td>
-              <td>OSS</td>
-              <td><span class="rank rank-plain">今回の主目的には不適</span></td>
-            </tr>
-            <tr>
-              <td class="name">Apryse WebViewer</td>
-              <td><span class="mark mark-yes">○</span> 可</td>
-              <td><span class="mark mark-yes">○</span> 適合</td>
-              <td>商用</td>
-              <td><span class="rank">第一候補</span></td>
-            </tr>
-            <tr>
-              <td class="name">Foxit PDF SDK for Web</td>
-              <td><span class="mark mark-yes">○</span> 可</td>
-              <td><span class="mark mark-part">○候補</span> 要確認</td>
-              <td>商用</td>
-              <td><span class="rank">第二候補</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+  </section>
 
-      <ul class="table-notes">
-        <li>
-          <strong>PDF.js の「×」について:</strong>
-          PDF.js は表示・テキスト抽出には適している。「不可」なのは既存本文の書き換えであって、PDF表示ができないという意味ではない。
-        </li>
-        <li>
-          <strong>pdf-lib の「×」について:</strong>
-          pdf-lib はPDF生成、ページへの描画、テキスト追加、フォーム入力には使える。既存本文の文字を選択して差し替える用途に向かない、という意味である。
-        </li>
-        <li>
-          <strong>Foxit の「○候補」について:</strong>
-          編集機能は存在するが、静的配信のみで完結する構成にできるかを実配置で確認していないため、断定していない。
-        </li>
-        <li>
-          <strong>「商用」について:</strong>
-          両SDKとも本番利用には製品ライセンスが必要。Apryse の Content Edit は追加ライセンス対象とされる。
-          <strong>価格は公式な確認が取れていないため記載しない。</strong>
-        </li>
-      </ul>
-    </section>
+  <!-- -------------------------------------------------------- パスワード -->
 
-    <!-- 4. 何がまだ分からないか -->
-    <section id="unknowns">
-      <h2><span class="num">4</span>何がまだ分からないか</h2>
+  <section class="password" id="password" aria-labelledby="password-title" hidden>
 
-      <p class="lede">
-        重要なのは「機能一覧」ではなく、実際の自治体業務で扱うPDFで正常に編集できるかである。
-        以下はいずれも実機検証を行っていない。
-      </p>
+    <h2 class="password__title" id="password-title">パスワードの入力</h2>
 
-      <ul class="unknowns">
-        <li><span class="badge-unknown">未確認</span>日本語PDFの実編集品質</li>
-        <li><span class="badge-unknown">未確認</span>埋め込みフォントへの対応</li>
-        <li><span class="badge-unknown">未確認</span>編集後PDFの互換性（別ビューア・印刷）</li>
-        <li><span class="badge-unknown">未確認</span>外部通信・ライセンス認証の要否</li>
-        <li><span class="badge-unknown">未確認</span>オフライン・庁内配置の条件</li>
-        <li><span class="badge-unknown">未確認</span>ライセンス費用・調達条件</li>
-        <li><span class="badge-unknown">未確認</span>一般職員向けUIとして成立するか</li>
-      </ul>
+    <p class="password__lead">
+      このPDFはパスワードで保護されています。
+      開くためのパスワードを入力してください。
+      入力したパスワードは保存されません。
+    </p>
 
-      <div class="takeaway">
-        <p>
-          <strong>「機能が存在する」ことと「庁内で一般職員向けツールとして運用できる」ことは同じではない。</strong>
-          上記が未確認である限り、本番実装へは進まない。
-        </p>
-      </div>
-    </section>
+    <form class="password__form" id="password-form" autocomplete="off">
 
-    <!-- 5. 次にやること -->
-    <section id="next">
-      <h2><span class="num">5</span>次にやること</h2>
+      <label class="password__label" for="password-input">パスワード</label>
 
-      <div class="next-banner">
-        <p class="kicker">次フェーズ</p>
-        <p class="headline">Apryse / Foxit による PDF本文編集 PoC</p>
-        <p class="state">
-          状態: <strong>PoC未実施</strong>　/　第一候補 Apryse WebViewer、第二候補 Foxit PDF SDK for Web で検証する。
-        </p>
-      </div>
+      <input
+        class="password__input"
+        type="password"
+        id="password-input"
+        autocomplete="off"
+        spellcheck="false">
 
-      <p class="lede" style="margin-bottom:0;">
-        PoCでは、日本語本文の選択・編集・削除・入力、保存後の再編集、別ビューアでの表示、印刷、外部送信の有無、
-        一般職員が操作できるかまでを確認する（全10項目は <code>docs/feasibility.md</code> に記載）。
-        PoC成立後に、はじめて本番ツールのUI/UX設計へ進む。
-      </p>
+      <button class="password__submit" type="submit">開く</button>
 
-      <div class="outcomes">
-        <div class="outcome">
-          <strong>採用</strong>
-          <span>本番ツールのUI/UX設計へ進む</span>
-        </div>
-        <div class="outcome">
-          <strong>別SDKを検討</strong>
-          <span>候補を入れ替えて再評価する</span>
-        </div>
-        <div class="outcome">
-          <strong>本ツールを断念</strong>
-          <span>要件を満たせないと記録して終了する</span>
-        </div>
-      </div>
-    </section>
+    </form>
 
-    <!-- 6. 詳細資料 -->
-    <section id="docs">
-      <h2><span class="num">6</span>詳細資料</h2>
+  </section>
 
-      <p class="lede">
-        検討経緯の詳細、確認済み事項、未確認事項の一覧、PoCの確認項目は次に記載している。
-      </p>
+  <!-- ------------------------------------------------------------ エラー -->
 
-      <ul class="docs">
-        <li>
-          <a href="docs/feasibility.md">
-            <span class="path">docs/feasibility.md</span>
-            <span class="what">検討経緯・技術判断の正式な記録（背景、初回判定、判定変更、未確認事項、次フェーズ、再検討時の確認ポイント）</span>
-          </a>
-        </li>
-        <li>
-          <a href="README.md">
-            <span class="path">README.md</span>
-            <span class="what">リポジトリの概要</span>
-          </a>
-        </li>
-      </ul>
-    </section>
+  <section class="error" id="error" aria-labelledby="error-title" hidden>
 
-    <footer>
-      <p>
-        このページは検討状況の共有用の静的HTMLです。外部JavaScriptライブラリ、外部CDN、外部フォントは使用していません。
-      </p>
-      <p>
-        記載した製品情報は 2026-08-30 時点の各社公開ドキュメントに基づきます。
-        ライセンス・製品構成・対応機能は変わりうるため、検討再開時は作業時点の公式情報を再確認してください。
-      </p>
-      <p>
-        最終更新: 2026-08-30
-      </p>
-    </footer>
+    <h2 class="error__title" id="error-title">—</h2>
 
-  </div>
+    <p class="error__lead" id="error-lead">—</p>
+
+    <details class="error__detail">
+      <summary>詳細（開発者向け）</summary>
+      <pre class="error__raw" id="error-raw"></pre>
+    </details>
+
+  </section>
+
+  <!-- -------------------------------------------------- 開発者向け詳細 -->
+
+  <details class="debug">
+
+    <summary>開発者向け詳細</summary>
+
+    <dl class="debug__list">
+
+      <dt>engine</dt>
+      <dd id="debug-engine">—</dd>
+
+      <dt>text run</dt>
+      <dd id="debug-runs">—</dd>
+
+      <dt>state</dt>
+      <dd id="debug-state">idle</dd>
+
+    </dl>
+
+  </details>
+
+  <!-- ------------------------------------------------------------ 補足 -->
+
+  <footer class="note">
+
+    <p>
+      PDFの処理はすべてブラウザ内で行われ、ファイルがサーバーや外部サービスへ送られることはありません。
+    </p>
+
+    <p>
+      現在は処理エンジンの組み込み確認段階です。本文の検索・置換・保存は次の段階で用意します。
+    </p>
+
+  </footer>
+
+</main>
+
+<script type="module" src="./js/app.js"></script>
+
+<!-- 処理エンジン（ES Module）を読み込めなかった場合の案内。
+     file:// で直接開いた場合や、静的サーバーが .js をJavaScriptとして
+     配信していない場合に表示される。 -->
+<script>
+  (function () {
+    var notice = document.getElementById("boot-error");
+
+    function show() {
+      if (!window.__idontlovepdfReady) notice.hidden = false;
+    }
+
+    document.querySelector('script[type="module"]').addEventListener("error", show);
+    window.setTimeout(show, 3000);
+  })();
+</script>
 
 </body>
 </html>

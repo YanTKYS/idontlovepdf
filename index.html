@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PDF編集ツール</title>
-  <meta name="description" content="PDFをブラウザ内で読み込み、本文テキストを認識する最小構成のツール。選択したPDFは外部へ送信されません。">
+  <meta name="description" content="PDF内の文字を検索して置き換え、編集済みPDFとして保存するツール。選択したPDFは外部へ送信されません。">
   <!-- 既定のfavicon要求（外部・同一origin問わず）を発生させない -->
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./css/style.css">
@@ -121,6 +121,76 @@
 
   </section>
 
+  <!-- ------------------------------------------------------------ 編集 -->
+
+  <section class="edit" id="edit" aria-labelledby="edit-title" hidden>
+
+    <h2 class="edit__title" id="edit-title">文字を検索</h2>
+
+    <form class="edit__form" id="search-form">
+
+      <label class="edit__label" for="search-input">検索する文字</label>
+
+      <input
+        class="edit__input"
+        type="text"
+        id="search-input"
+        autocomplete="off"
+        spellcheck="false">
+
+      <button class="edit__button" type="submit" id="search-submit" disabled>検索</button>
+
+    </form>
+
+    <p class="edit__status" id="search-status" role="status" aria-live="polite">
+      検索する文字を入力してください
+    </p>
+
+    <!-- 検索結果 -->
+
+    <fieldset class="results" id="results" hidden>
+
+      <legend class="results__legend">検索結果（1件を選んでください）</legend>
+
+      <ul class="results__list" id="results-list"></ul>
+
+      <p class="results__more" id="results-more" hidden></p>
+
+    </fieldset>
+
+    <!-- 置換 -->
+
+    <form class="edit__form" id="replace-form">
+
+      <label class="edit__label" for="replace-input">置き換える文字</label>
+
+      <input
+        class="edit__input"
+        type="text"
+        id="replace-input"
+        autocomplete="off"
+        spellcheck="false">
+
+      <button class="edit__button" type="submit" id="replace-submit" disabled>置換</button>
+
+    </form>
+
+    <p class="edit__hint">
+      空欄のまま置換すると、選択した文字を削除します。
+    </p>
+
+    <!-- 編集結果 -->
+
+    <div class="edit__summary">
+
+      <p class="edit__changes" id="edit-changes" role="status" aria-live="polite">変更 0件</p>
+
+      <button class="edit__save" type="button" id="save-button" disabled>編集済みPDFを保存</button>
+
+    </div>
+
+  </section>
+
   <!-- -------------------------------------------------- 開発者向け詳細 -->
 
   <details class="debug">
@@ -134,6 +204,9 @@
 
       <dt>text run</dt>
       <dd id="debug-runs">—</dd>
+
+      <dt>changes</dt>
+      <dd id="debug-changes">0</dd>
 
       <dt>state</dt>
       <dd id="debug-state">idle</dd>
@@ -151,7 +224,11 @@
     </p>
 
     <p>
-      現在は処理エンジンの組み込み確認段階です。本文の検索・置換・保存は次の段階で用意します。
+      元のPDFファイルは変更しません。編集結果は別名のPDFとして保存します。
+    </p>
+
+    <p>
+      パスワードで保護されたPDFは、検索はできますが編集結果を保存できません。
     </p>
 
   </footer>

@@ -43,6 +43,7 @@ const elements = {
   replaceForm:    document.getElementById("replace-form"),
   replaceInput:   document.getElementById("replace-input"),
   replaceSubmit:  document.getElementById("replace-submit"),
+  editNotice:     document.getElementById("edit-notice"),
   editChanges:    document.getElementById("edit-changes"),
   saveButton:     document.getElementById("save-button"),
   debugEngine:    document.getElementById("debug-engine"),
@@ -230,6 +231,11 @@ let results = [];
 let selectedIndex = -1;
 let changeCount = 0;
 
+// 最後に「検索」を実行したときの検索文字。
+// 検索欄が書き換えられたら、前の検索結果と選択は無効にする。
+// そうしないと、画面の検索欄と実際の置換対象がずれて誤編集につながる。
+let lastSearchedQuery = null;
+
 // 保存用に発行した Blob URL。次の保存時とページ離脱時に必ず解放する。
 let objectUrl = null;
 let objectUrlTimer = 0;
@@ -255,6 +261,7 @@ function resetDocument(name) {
   passwordAttempted = false;
   results = [];
   selectedIndex = -1;
+  lastSearchedQuery = null;
   changeCount = 0;
   releaseObjectUrl();
 
@@ -272,6 +279,7 @@ function resetDocument(name) {
   elements.results.hidden = true;
   elements.resultsList.replaceChildren();
   elements.resultsMore.hidden = true;
+  elements.editNotice.hidden = true;
   showChangeCount();
 }
 
@@ -423,7 +431,8 @@ function renderResults() {
 
   if (results.length > shown) {
     elements.resultsMore.textContent =
-      `全${counter(results.length)}件のうち、先頭${counter(shown)}件を表示しています。`;
+      `全${counter(results.length)}件のうち、先頭${counter(shown)}件を表示しています。`
+      + "検索する文字を長くすると絞り込めます。";
     elements.resultsMore.hidden = false;
   } else {
     elements.resultsMore.hidden = true;
@@ -432,23 +441,31 @@ function renderResults() {
   elements.results.hidden = results.length === 0;
 }
 
+// 前の検索結果と選択を捨てる。置換対象が画面の表示とずれた状態を残さない。
+function invalidateResults(message) {
+  results = [];
+  selectedIndex = -1;
+  lastSearchedQuery = null;
+  elements.results.hidden = true;
+  elements.resultsList.replaceChildren();
+  elements.resultsMore.hidden = true;
+  elements.searchStatus.textContent = message;
+  updateControls();
+}
+
 function runSearch() {
   const query = elements.searchInput.value;
+  elements.editNotice.hidden = true;
 
   // 空文字はすべてのrunへ一致してしまうため、検索そのものを行わない。
   if (query.length === 0) {
-    results = [];
-    selectedIndex = -1;
-    elements.results.hidden = true;
-    elements.resultsList.replaceChildren();
-    elements.resultsMore.hidden = true;
-    elements.searchStatus.textContent = "検索する文字を入力してください";
-    updateControls();
+    invalidateResults("検索する文字を入力してください");
     return;
   }
 
   results = findMatches(query);
   selectedIndex = -1;
+  lastSearchedQuery = query;
   renderResults();
 
   elements.searchStatus.textContent = results.length === 0
@@ -469,6 +486,16 @@ async function replaceSelected() {
   const replacement = elements.replaceInput.value;
 
   hidePanels();
+  elements.editNotice.hidden = true;
+
+  // 置換前と置換後が同じなら、PDFを書き換えない。
+  // 「変更 N件」は実際に変わった件数を示すため、ここで数えない。
+  if (replacement === target.runText.slice(target.start, target.end)) {
+    elements.editNotice.textContent = "置換前と置換後が同じです。変更していません。";
+    elements.editNotice.hidden = false;
+    return;
+  }
+
   setState("busy");
   await nextFrame();
 
@@ -580,7 +607,20 @@ elements.passwordForm.addEventListener("submit", (event) => {
 });
 
 // 前後の空白が意味を持つことがあるため、検索文字列は trim せずそのまま使う。
-elements.searchInput.addEventListener("input", updateControls);
+//
+// 検索欄が書き換えられたら、前の検索結果と選択をその場で捨てる。
+// 「令和6年度で選択 → 検索欄を令和7年度へ書き換え → 検索を押さずに置換」
+// のような操作で、画面と実際の置換対象がずれるのを防ぐ。
+elements.searchInput.addEventListener("input", () => {
+  if (elements.searchInput.value === lastSearchedQuery) {
+    updateControls();
+    return;
+  }
+  elements.editNotice.hidden = true;
+  invalidateResults(elements.searchInput.value.length === 0
+    ? "検索する文字を入力してください"
+    : "検索条件が変更されました。もう一度検索してください");
+});
 
 elements.searchForm.addEventListener("submit", (event) => {
   event.preventDefault();

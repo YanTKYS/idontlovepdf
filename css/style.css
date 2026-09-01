@@ -492,6 +492,16 @@ body {
   font-size: 13px;
 }
 
+.edit__notice {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  background: var(--warn-bg);
+  border: 1px solid #e0cfa4;
+  border-radius: 4px;
+  color: var(--warn);
+  font-size: 14px;
+}
+
 /* 編集結果 */
 
 .edit__summary {

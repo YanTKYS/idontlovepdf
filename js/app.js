@@ -88,10 +88,16 @@ function setState(name) {
 }
 
 // 各操作ボタンの有効・無効をまとめて決める。
-// 処理中はすべて無効にして、二重送信を防ぐ。
+//
+// 処理中はボタンだけでなく、検索欄・置換欄・検索結果の選択も止める。
+// 処理の途中でこれらを変えられると、画面の表示と実際の処理対象がずれる。
+// 検索結果は fieldset なので、fieldset を無効にすれば配下のradioがまとめて止まる。
 function updateControls() {
   const busy = uiState === "busy";
   elements.fileInput.disabled = busy;
+  elements.searchInput.disabled = busy;
+  elements.replaceInput.disabled = busy;
+  elements.results.disabled = busy;
   elements.searchSubmit.disabled = busy || elements.searchInput.value.length === 0;
   elements.replaceSubmit.disabled = busy || selectedIndex < 0 || lengthChangeBlocked();
   elements.saveButton.disabled = busy || changeCount === 0;
@@ -573,8 +579,20 @@ function invalidateResults(message) {
 }
 
 // 検索そのもの。画面状態（busy / ok / ng）は呼び出し側が決める。
+//
+// 検索文字は呼び出し時のものを引数で受け取り、途中で画面から読み直さない。
+// 完了時にも検索欄が同じ文字のままかを確認し、違っていれば結果を画面へ出さない。
+// 処理中は検索欄を止めているが、UIを変えたときにも古い結果が表示されないようにする。
+// 反映しなかった場合は false を返す。
 async function performSearch(query) {
-  matches = await editor.searchText(query);
+  const found = await editor.searchText(query);
+
+  if (elements.searchInput.value !== query) {
+    invalidateResults("検索条件が変更されました。もう一度検索してください");
+    return false;
+  }
+
+  matches = found;
   selectedIndex = -1;
   lastSearchedQuery = query;
   renderResults();
@@ -585,6 +603,7 @@ async function performSearch(query) {
 
   updateReplaceNotice();
   updateControls();
+  return true;
 }
 
 async function runSearch() {
@@ -670,7 +689,12 @@ async function replaceSelected() {
   if (selectedIndex < 0 || selectedIndex >= matches.length) return;
   if (lastSearchedQuery === null) return;
 
-  const chosen = matches[selectedIndex];
+  // 処理の対象は、この時点の値だけで決める。
+  // 検索文字・選択位置・置換文字を局所変数へ写し取り、途中で画面から読み直さない。
+  // 非同期処理の間に選択が変わっても、置換するのは利用者が押した時点の1件である。
+  const query = lastSearchedQuery;
+  const targetIndex = selectedIndex;
+  const chosen = matches[targetIndex];
   const replacement = elements.replaceInput.value;
 
   hidePanels();
@@ -699,11 +723,11 @@ async function replaceSelected() {
     // match ID は、それを発行したeditorだけで有効である。
     // 一時editorでは同じ検索文字で検索し直し、同じ順番の結果を取り直す。
     const temporary = new PdfTextEditor(currentBytes);
-    const temporaryMatches = await temporary.searchText(lastSearchedQuery);
+    const temporaryMatches = await temporary.searchText(query);
 
     // 並びや内容が変わっていたら、取り違えを避けて中止する。
     if (temporaryMatches.length !== matches.length) throw new Error(STALE_SELECTION);
-    const fresh = temporaryMatches[selectedIndex];
+    const fresh = temporaryMatches[targetIndex];
     if (!sameOccurrence(fresh, chosen)) throw new Error(STALE_SELECTION);
 
     await temporary.replaceTextMatch(fresh.id, replacement);
@@ -730,7 +754,7 @@ async function replaceSelected() {
 
     // 置換後の本文で検索し直し、残り件数を更新する。
     // 検索結果は、置換後のPDFを開き直した editor が発行し直したものになる。
-    await performSearch(lastSearchedQuery);
+    await performSearch(query);
     setState("ok");
   } catch (error) {
     // 失敗しても currentBytes / editor / 変更件数・変更履歴・プレビューはそのまま。
@@ -776,13 +800,17 @@ function editedFileName(name) {
 async function saveEdited() {
   if (changeCount === 0 || !currentBytes) return;
 
+  // 保存対象も、この時点のバイト列とファイル名で確定させる。
+  const bytes = currentBytes;
+  const name = fileName;
+
   hidePanels();
   setState("busy");
   await nextFrame();
 
   try {
     // ダウンロード直前にも、PDFとして開き直せることを確認する。
-    const check = new PdfTextEditor(currentBytes);
+    const check = new PdfTextEditor(bytes);
     await check.listTextRuns();
   } catch (error) {
     showError(classifyError(error, { phase: "edit" }), error);
@@ -791,11 +819,11 @@ async function saveEdited() {
   }
 
   releaseObjectUrl();
-  objectUrl = URL.createObjectURL(new Blob([currentBytes], { type: "application/pdf" }));
+  objectUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
 
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = editedFileName(fileName);
+  anchor.download = editedFileName(name);
   document.body.append(anchor);
   anchor.click();
   anchor.remove();

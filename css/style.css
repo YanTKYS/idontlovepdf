@@ -383,6 +383,21 @@ body {
   background: #17395a;
 }
 
+/* 処理中は入力欄・検索結果も操作できない。見た目でも分かるようにする。 */
+.edit__input:disabled {
+  background: #eef0f2;
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+.results:disabled {
+  opacity: 0.6;
+}
+
+.results:disabled .results__item {
+  cursor: progress;
+}
+
 .edit__button:disabled {
   background: #c3ccd4;
   color: #ffffff;

@@ -1,55 +1,67 @@
 // PDF編集ツール
 //
 // idontlovepdf-engine の正式Release bundle（vendor/idontlovepdf-engine.js）だけを
-// 利用して、PDFの読み込み・本文の検索・1件ずつの置換・編集済みPDFの保存を行う。
+// 利用して、PDFの読み込み・本文の検索・1件ずつの置換・編集済みPDFの保存・
+// 変更前／編集中PDFのプレビューを行う。
 //
 // 方針:
 //   - PDFはブラウザ内だけで処理する。サーバーや外部サービスへ送らない。
 //   - engineの内部モジュール・内部プロパティは参照しない。正式公開APIのみを使う。
+//   - 検索と置換対象の判断は engine の高レベルAPI（searchText / replaceTextMatch）
+//     へ一本化する。run の連結・continuityの判断・PDF描画命令の解釈を本体側で行わない。
 //   - engineのversionはbundleがexportする ENGINE_VERSION から取得し、
 //     この本体側へ版数をハードコードしない。
 //   - パスワードは処理中のメモリ内だけで扱い、保存もログ出力もしない。
-//   - PDF内部構造（object番号・text run等）は一般利用者向け画面へ出さない。
+//   - PDF内部構造（object番号・text run・match ID等）は一般利用者向け画面へ出さない。
 
 import { PdfTextEditor, ENGINE_VERSION } from "../vendor/idontlovepdf-engine.js";
 
 /* ------------------------------------------------------------------ 要素 */
 
 const elements = {
-  picker:         document.getElementById("picker"),
-  fileInput:      document.getElementById("pdf-input"),
-  state:          document.getElementById("state"),
-  stateValue:     document.getElementById("state-value"),
-  result:         document.getElementById("result"),
-  resultFile:     document.getElementById("result-file"),
-  resultEngine:   document.getElementById("result-engine"),
-  resultLoad:     document.getElementById("result-load"),
-  resultText:     document.getElementById("result-text"),
-  password:       document.getElementById("password"),
-  passwordForm:   document.getElementById("password-form"),
-  passwordInput:  document.getElementById("password-input"),
-  error:          document.getElementById("error"),
-  errorTitle:     document.getElementById("error-title"),
-  errorLead:      document.getElementById("error-lead"),
-  errorRaw:       document.getElementById("error-raw"),
-  edit:           document.getElementById("edit"),
-  searchForm:     document.getElementById("search-form"),
-  searchInput:    document.getElementById("search-input"),
-  searchSubmit:   document.getElementById("search-submit"),
-  searchStatus:   document.getElementById("search-status"),
-  results:        document.getElementById("results"),
-  resultsList:    document.getElementById("results-list"),
-  resultsMore:    document.getElementById("results-more"),
-  replaceForm:    document.getElementById("replace-form"),
-  replaceInput:   document.getElementById("replace-input"),
-  replaceSubmit:  document.getElementById("replace-submit"),
-  editNotice:     document.getElementById("edit-notice"),
-  editChanges:    document.getElementById("edit-changes"),
-  saveButton:     document.getElementById("save-button"),
-  debugEngine:    document.getElementById("debug-engine"),
-  debugRuns:      document.getElementById("debug-runs"),
-  debugChanges:   document.getElementById("debug-changes"),
-  debugState:     document.getElementById("debug-state")
+  picker:          document.getElementById("picker"),
+  fileInput:       document.getElementById("pdf-input"),
+  state:           document.getElementById("state"),
+  stateValue:      document.getElementById("state-value"),
+  result:          document.getElementById("result"),
+  resultFile:      document.getElementById("result-file"),
+  resultEngine:    document.getElementById("result-engine"),
+  resultLoad:      document.getElementById("result-load"),
+  resultText:      document.getElementById("result-text"),
+  password:        document.getElementById("password"),
+  passwordForm:    document.getElementById("password-form"),
+  passwordInput:   document.getElementById("password-input"),
+  error:           document.getElementById("error"),
+  errorTitle:      document.getElementById("error-title"),
+  errorLead:       document.getElementById("error-lead"),
+  errorRaw:        document.getElementById("error-raw"),
+  workspace:       document.getElementById("workspace"),
+  searchForm:      document.getElementById("search-form"),
+  searchInput:     document.getElementById("search-input"),
+  searchSubmit:    document.getElementById("search-submit"),
+  searchStatus:    document.getElementById("search-status"),
+  results:         document.getElementById("results"),
+  resultsList:     document.getElementById("results-list"),
+  resultsMore:     document.getElementById("results-more"),
+  replaceForm:     document.getElementById("replace-form"),
+  replaceInput:    document.getElementById("replace-input"),
+  replaceSubmit:   document.getElementById("replace-submit"),
+  editNotice:      document.getElementById("edit-notice"),
+  previewOriginal: document.getElementById("preview-original"),
+  previewCurrent:  document.getElementById("preview-current"),
+  previewCaption:  document.getElementById("preview-caption"),
+  previewFrame:    document.getElementById("preview-frame"),
+  previewViewer:   document.getElementById("preview-viewer"),
+  previewFallback: document.getElementById("preview-fallback"),
+  previewOpen:     document.getElementById("preview-open"),
+  editChanges:     document.getElementById("edit-changes"),
+  changesList:     document.getElementById("changes-list"),
+  changesEmpty:    document.getElementById("changes-empty"),
+  saveButton:      document.getElementById("save-button"),
+  debugEngine:     document.getElementById("debug-engine"),
+  debugRuns:       document.getElementById("debug-runs"),
+  debugChanges:    document.getElementById("debug-changes"),
+  debugState:      document.getElementById("debug-state")
 };
 
 /* ------------------------------------------------------------ 画面の状態 */
@@ -76,16 +88,26 @@ function setState(name) {
 }
 
 // 各操作ボタンの有効・無効をまとめて決める。
-// 処理中はすべて無効にして、二重送信を防ぐ。
+//
+// 処理中はボタンだけでなく、検索欄・置換欄・検索結果の選択も止める。
+// 処理の途中でこれらを変えられると、画面の表示と実際の処理対象がずれる。
+// 検索結果は fieldset なので、fieldset を無効にすれば配下のradioがまとめて止まる。
 function updateControls() {
   const busy = uiState === "busy";
   elements.fileInput.disabled = busy;
+  elements.searchInput.disabled = busy;
+  elements.replaceInput.disabled = busy;
+  elements.results.disabled = busy;
   elements.searchSubmit.disabled = busy || elements.searchInput.value.length === 0;
-  elements.replaceSubmit.disabled = busy || selectedIndex < 0;
+  elements.replaceSubmit.disabled = busy || selectedIndex < 0 || lengthChangeBlocked();
   elements.saveButton.disabled = busy || changeCount === 0;
 }
 
 const counter = (value) => value.toLocaleString("ja-JP");
+
+// 文字数はUnicodeのcode point数で数える。
+// UTF-16の .length では、サロゲートペア（絵文字・一部の漢字）を2文字と数えてしまう。
+const pointLength = (text) => [...text].length;
 
 /* ---------------------------------------------------- engineのerror分類 */
 
@@ -126,12 +148,35 @@ const ERROR_KINDS = {
   },
   "changed-under-us": {
     title: "選択した箇所を特定できませんでした",
-    lead: "検索し直してから、もう一度選択してください。"
+    lead: "検索結果が変化しました。もう一度検索してください。"
+  },
+  "empty-query": {
+    title: "検索する文字を入力してください",
+    lead: "検索する文字が空欄です。直したい文字を入力してから検索してください。"
+  },
+  "length-change-unsupported": {
+    title: "この箇所は同じ文字数で置き換えてください",
+    lead: "この箇所は現在、同じ文字数への置換または削除に対応しています。同じ文字数の文字を入力するか、空欄のまま置換して削除してください。"
+  },
+  "mixed-font-unsupported": {
+    title: "この箇所はまとめて置き換えられません",
+    lead: "この箇所は途中で文字の書体が変わっているため、まとめて置き換えられません。別の箇所を選ぶか、元のファイル（Word等）からの修正をご検討ください。"
   },
   other: {
     title: "処理中に問題が発生しました",
     lead: "もう一度お試しください。繰り返し発生する場合は、情報担当へご連絡ください。"
   }
+};
+
+// v0.2.1の高レベルAPIが返す安定したerror code。
+// message文字列より、こちらの一致を優先して分類する。
+const ERROR_CODE_KINDS = {
+  EMPTY_QUERY: "empty-query",
+  UNKNOWN_MATCH: "changed-under-us",
+  MATCH_STALE: "changed-under-us",
+  MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED: "length-change-unsupported",
+  MULTI_RUN_FONT_CHANGE_UNSUPPORTED: "mixed-font-unsupported",
+  REPLACEMENT_NOT_A_STRING: "other"
 };
 
 const FONT_MISSING_PATTERN = /has no ToUnicode code for|String replacements are limited to single-byte characters/;
@@ -140,12 +185,21 @@ const UNSUPPORTED_PATTERN = /Unsupported|not supported|Security Handler|requires
 
 const BROKEN_PATTERN = /Malformed|Unterminated|invalid|Invalid|not found|must contain|must start after|does not (?:match|end|start)|Expected|Circular|has no |is missing|out of the safe integer range|is too large|failed/;
 
+// 本体側で検出した「検索結果が変化した」を、engineのerrorと同じ経路で扱うための印。
+const STALE_SELECTION = "idontlovepdf: search results changed";
+
 // `phase` は "load"（PDFを開く）と "edit"（検索結果を置換する）を区別する。
 // 置換中に暗号化PDFのパスワードを求められた場合は、パスワードを聞き直すのではなく
 // 「保存できないPDF」として案内する（現在のengineは暗号化PDFを再保存できない）。
 function classifyError(error, { phase = "load", passwordAttempted = false } = {}) {
+  // 高レベルAPIのerror codeを最優先で使う。message文字列は将来変わりうる。
+  if (error && typeof error.code === "string" && ERROR_CODE_KINDS[error.code]) {
+    return ERROR_CODE_KINDS[error.code];
+  }
+
   const message = errorMessage(error);
 
+  if (message === STALE_SELECTION) return "changed-under-us";
   if (message.startsWith("Document modification is not permitted")) return "modify-denied";
   if (message.startsWith("Saving edits to an encrypted PDF")) return "encrypted-save";
   if (FONT_MISSING_PATTERN.test(message)) return "font-missing";
@@ -200,9 +254,11 @@ function showLoadFailure(kind) {
     : "✗ 失敗";
   elements.resultText.textContent = "—";
   elements.debugRuns.textContent = "—";
-  elements.edit.hidden = true;
+  elements.workspace.hidden = true;
 }
 
+// listTextRuns() は概況表示（何件の本文を認識したか）にだけ使う。
+// 検索・置換の対象を判断するためには使わない。
 function showRunCount(count) {
   elements.resultLoad.textContent = "✓ 成功";
   elements.resultText.textContent = `${counter(count)}件のテキストを認識`;
@@ -217,7 +273,7 @@ function showChangeCount() {
 /* -------------------------------------------------------- ドキュメント状態 */
 
 // originalBytes は選択時のPDFそのもの。編集しても失わない。
-// currentBytes は編集後の最新PDF。保存対象はこちら。
+// currentBytes は編集後の最新PDF。保存対象・「編集中」プレビュー対象はこちら。
 // engineは入力バイト列を読み取るだけで書き換えないため、初回は同じ配列を指してよい。
 let originalBytes = null;
 let currentBytes = null;
@@ -227,9 +283,14 @@ let editor = null;
 let runs = [];
 let passwordAttempted = false;
 
-let results = [];
+// matches は editor.searchText() が返した検索結果。
+// この中の id は、発行した editor インスタンス専用である。別editorへ渡さない。
+let matches = [];
 let selectedIndex = -1;
 let changeCount = 0;
+
+// 成功した置換の記録（セッション内の表示のみ。保存もlocalStorageへの書き出しもしない）。
+let changeLog = [];
 
 // 最後に「検索」を実行したときの検索文字。
 // 検索欄が書き換えられたら、前の検索結果と選択は無効にする。
@@ -259,11 +320,13 @@ function resetDocument(name) {
   editor = null;
   runs = [];
   passwordAttempted = false;
-  results = [];
+  matches = [];
   selectedIndex = -1;
   lastSearchedQuery = null;
   changeCount = 0;
+  changeLog = [];
   releaseObjectUrl();
+  releasePreviewUrls();
 
   elements.result.hidden = false;
   elements.resultFile.textContent = name;
@@ -272,7 +335,7 @@ function resetDocument(name) {
   elements.resultText.textContent = "—";
   elements.debugRuns.textContent = "—";
 
-  elements.edit.hidden = true;
+  elements.workspace.hidden = true;
   elements.searchInput.value = "";
   elements.replaceInput.value = "";
   elements.searchStatus.textContent = "検索する文字を入力してください";
@@ -281,6 +344,7 @@ function resetDocument(name) {
   elements.resultsMore.hidden = true;
   elements.editNotice.hidden = true;
   showChangeCount();
+  renderChangeLog();
 }
 
 /* -------------------------------------------------------------- 読み込み */
@@ -330,6 +394,7 @@ async function extractText(password) {
 
   try {
     // 引数なし呼び出しと同じく、空パスワードでの認証がまず試される。
+    // ここでの listTextRuns() は「読み込めたこと」と本文件数の確認にだけ使う。
     runs = await editor.listTextRuns(password);
   } catch (error) {
     const kind = classifyError(error, { passwordAttempted });
@@ -346,8 +411,98 @@ async function extractText(password) {
 
   hidePanels();
   showRunCount(runs.length);
-  elements.edit.hidden = false;
+  elements.workspace.hidden = false;
+
+  // 読み込み直後は変更が無いため、変更前と編集中は同じ内容になる。
+  buildPreviews();
+
   setState("ok");
+}
+
+/* ------------------------------------------------------------ プレビュー */
+
+// 変更前（originalBytes）と編集中（currentBytes）のBlob URLを、別々に持つ。
+// 保存用の objectUrl とは独立して管理する。
+let originalPreviewUrl = null;
+let currentPreviewUrl = null;
+let previewSide = "original";
+
+function pdfBlobUrl(bytes) {
+  return URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+}
+
+function releasePreviewUrls() {
+  if (originalPreviewUrl) {
+    URL.revokeObjectURL(originalPreviewUrl);
+    originalPreviewUrl = null;
+  }
+  releaseCurrentPreviewUrl();
+  previewSide = "original";
+  elements.previewViewer.src = "about:blank";
+}
+
+function releaseCurrentPreviewUrl() {
+  if (currentPreviewUrl) {
+    URL.revokeObjectURL(currentPreviewUrl);
+    currentPreviewUrl = null;
+  }
+}
+
+// ブラウザ標準のPDF viewerが使えるかどうか。
+// 判定できないブラウザでは、まず表示を試みる（過剰に機能を止めない）。
+function canPreviewPdf() {
+  if (typeof navigator.pdfViewerEnabled === "boolean") return navigator.pdfViewerEnabled;
+  if (navigator.mimeTypes && navigator.mimeTypes["application/pdf"]) return true;
+  return true;
+}
+
+function previewUrl() {
+  return previewSide === "current" ? currentPreviewUrl : originalPreviewUrl;
+}
+
+// ブラウザ標準PDF viewerへの表示指定（PDFの「開くときのパラメータ」）。
+// 横幅に合わせて表示し、サムネイル欄を開かないことで、確認用の表示を広く取る。
+// 対応していないブラウザでは単に無視される。外部への要求は発生しない。
+const PREVIEW_VIEW = "#view=FitH&navpanes=0";
+
+// PDF選択時に、変更前・編集中の両方を作る。初回はどちらも同じ内容になる。
+function buildPreviews() {
+  originalPreviewUrl = pdfBlobUrl(originalBytes);
+  currentPreviewUrl = pdfBlobUrl(currentBytes);
+  showPreview("original");
+}
+
+// 置換に成功したときだけ呼ぶ。古いBlob URLを解放し、新しいPDFへ差し替える。
+// 同じURLを使い回さないため、ブラウザのキャッシュで古い内容が残ることはない。
+function refreshCurrentPreview() {
+  releaseCurrentPreviewUrl();
+  currentPreviewUrl = pdfBlobUrl(currentBytes);
+  showPreview("current");
+}
+
+function showPreview(side) {
+  previewSide = side === "current" ? "current" : "original";
+
+  const showingCurrent = previewSide === "current";
+  elements.previewOriginal.setAttribute("aria-pressed", String(!showingCurrent));
+  elements.previewCurrent.setAttribute("aria-pressed", String(showingCurrent));
+  elements.previewCaption.textContent = showingCurrent
+    ? "編集中のPDFを表示しています。"
+    : "変更前のPDFを表示しています。";
+
+  const url = previewUrl();
+  const available = Boolean(url) && canPreviewPdf();
+
+  elements.previewViewer.hidden = !available;
+  elements.previewFallback.hidden = available;
+  // 表示できないときは、空の大きな枠を残さない。
+  elements.previewFrame.classList.toggle("is-fallback", !available);
+  elements.previewOpen.disabled = !url;
+
+  if (available) {
+    const target = url + PREVIEW_VIEW;
+    if (elements.previewViewer.src !== target) elements.previewViewer.src = target;
+  }
 }
 
 /* ---------------------------------------------------------------- 検索 */
@@ -355,48 +510,16 @@ async function extractText(password) {
 // 一度に描画する検索結果の上限。件数そのものは全件数を表示する。
 const MAX_RESULTS_SHOWN = 100;
 
-// 検索結果に添える前後の文字数。run全文はそのまま画面へ出さない。
-const CONTEXT_LENGTH = 14;
-
-// 検索対象は listTextRuns() が返す各 run の本文だけとする。
-// 別々のrunをUI側で連結して「見た目上は連続しているはず」と推測はしない。
-function findMatches(query) {
-  const found = [];
-  for (let runIndex = 0; runIndex < runs.length; runIndex += 1) {
-    const run = runs[runIndex];
-    const text = run.text;
-    if (typeof text !== "string" || text.length === 0) continue;
-
-    // 同一run内に複数ある場合は、それぞれ別の検索結果として扱う。
-    let from = 0;
-    for (;;) {
-      const start = text.indexOf(query, from);
-      if (start < 0) break;
-      found.push({ runIndex, runId: run.id, runText: text, start, end: start + query.length });
-      from = start + query.length;
-    }
-  }
-  return found;
-}
-
-function contextOf(result) {
-  const text = result.runText;
-  const leadFrom = Math.max(0, result.start - CONTEXT_LENGTH);
-  const tailTo = Math.min(text.length, result.end + CONTEXT_LENGTH);
-  return {
-    leading: (leadFrom > 0 ? "…" : "") + text.slice(leadFrom, result.start),
-    match: text.slice(result.start, result.end),
-    trailing: text.slice(result.end, tailTo) + (tailTo < text.length ? "…" : "")
-  };
-}
-
+// 検索は engine の searchText() へ一本化する。
+// 本体側で run を連結したり、run の続きかどうかを判断したりしない。
+// 検索結果の id は engine が発行する不透明な値として扱い、解析しない。
 function renderResults() {
   const list = elements.resultsList;
   list.replaceChildren();
 
-  const shown = Math.min(results.length, MAX_RESULTS_SHOWN);
+  const shown = Math.min(matches.length, MAX_RESULTS_SHOWN);
   for (let index = 0; index < shown; index += 1) {
-    const context = contextOf(results[index]);
+    const match = matches[index];
 
     const radio = document.createElement("input");
     radio.type = "radio";
@@ -408,11 +531,12 @@ function renderResults() {
     const text = document.createElement("span");
     text.className = "results__text";
     // PDFの本文はテキストノードとして組み立てる（HTMLとして解釈させない）。
-    text.append(context.leading);
+    // 画面へ出すのは前後の文脈だけで、PDF内部の情報は出さない。
+    text.append(match.before ? `…${match.before}` : "");
     const mark = document.createElement("mark");
-    mark.textContent = context.match;
+    mark.textContent = match.text;
     text.append(mark);
-    text.append(context.trailing);
+    text.append(match.after ? `${match.after}…` : "");
 
     // 選択中であることを、色だけでなく文字でも示す。
     const badge = document.createElement("span");
@@ -429,68 +553,164 @@ function renderResults() {
     list.append(item);
   }
 
-  if (results.length > shown) {
+  if (matches.length > shown) {
     elements.resultsMore.textContent =
-      `全${counter(results.length)}件のうち、先頭${counter(shown)}件を表示しています。`
+      `全${counter(matches.length)}件のうち、先頭${counter(shown)}件を表示しています。`
       + "検索する文字を長くすると絞り込めます。";
     elements.resultsMore.hidden = false;
   } else {
     elements.resultsMore.hidden = true;
   }
 
-  elements.results.hidden = results.length === 0;
+  elements.results.hidden = matches.length === 0;
 }
 
 // 前の検索結果と選択を捨てる。置換対象が画面の表示とずれた状態を残さない。
 function invalidateResults(message) {
-  results = [];
+  matches = [];
   selectedIndex = -1;
   lastSearchedQuery = null;
   elements.results.hidden = true;
   elements.resultsList.replaceChildren();
   elements.resultsMore.hidden = true;
   elements.searchStatus.textContent = message;
+  updateReplaceNotice();
   updateControls();
 }
 
-function runSearch() {
+// 検索そのもの。画面状態（busy / ok / ng）は呼び出し側が決める。
+//
+// 検索文字は呼び出し時のものを引数で受け取り、途中で画面から読み直さない。
+// 完了時にも検索欄が同じ文字のままかを確認し、違っていれば結果を画面へ出さない。
+// 処理中は検索欄を止めているが、UIを変えたときにも古い結果が表示されないようにする。
+// 反映しなかった場合は false を返す。
+async function performSearch(query) {
+  const found = await editor.searchText(query);
+
+  if (elements.searchInput.value !== query) {
+    invalidateResults("検索条件が変更されました。もう一度検索してください");
+    return false;
+  }
+
+  matches = found;
+  selectedIndex = -1;
+  lastSearchedQuery = query;
+  renderResults();
+
+  elements.searchStatus.textContent = matches.length === 0
+    ? "一致する文字が見つかりませんでした"
+    : `${counter(matches.length)}件見つかりました`;
+
+  updateReplaceNotice();
+  updateControls();
+  return true;
+}
+
+async function runSearch() {
   const query = elements.searchInput.value;
   elements.editNotice.hidden = true;
+  hidePanels();
 
-  // 空文字はすべてのrunへ一致してしまうため、検索そのものを行わない。
+  // 空文字はengine側でも拒否される。画面では検索そのものを行わない。
   if (query.length === 0) {
     invalidateResults("検索する文字を入力してください");
     return;
   }
 
-  results = findMatches(query);
-  selectedIndex = -1;
-  lastSearchedQuery = query;
-  renderResults();
+  setState("busy");
+  await nextFrame();
 
-  elements.searchStatus.textContent = results.length === 0
-    ? "一致する文字が見つかりませんでした"
-    : `${counter(results.length)}件見つかりました`;
+  try {
+    await performSearch(query);
+    setState("ok");
+  } catch (error) {
+    const kind = classifyError(error, { phase: "edit" });
+    invalidateResults("検索できませんでした");
+    showError(kind, error);
+    setState("ng");
+  }
+}
 
-  updateControls();
+/* -------------------------------------------------- 置換前の案内と可否判定 */
+
+// 複数のまとまりへ分かれて記録されている箇所は、engine v0.2.1 では
+// 同じ文字数への置換と削除にだけ対応している。
+// engineへ送ってエラーになるのを待たず、入力中に判定して案内する。
+function lengthChangeBlocked() {
+  const match = matches[selectedIndex];
+  if (!match || match.runCount <= 1) return false;
+
+  const replacement = elements.replaceInput.value;
+  // 空欄は削除として扱えるため、常に可能。
+  if (replacement.length === 0) return false;
+
+  return pointLength(replacement) !== pointLength(match.text);
+}
+
+function updateReplaceNotice() {
+  if (!lengthChangeBlocked()) {
+    if (elements.editNotice.dataset.reason === "length") {
+      elements.editNotice.hidden = true;
+      delete elements.editNotice.dataset.reason;
+    }
+    return;
+  }
+
+  const match = matches[selectedIndex];
+  elements.editNotice.textContent =
+    "この箇所は現在、同じ文字数への置換または削除に対応しています。"
+    + `「${match.text}」と同じ${counter(pointLength(match.text))}文字を入力するか、`
+    + "空欄のまま置換して削除してください。";
+  elements.editNotice.dataset.reason = "length";
+  elements.editNotice.hidden = false;
 }
 
 /* ---------------------------------------------------------------- 置換 */
 
+// 検索結果を突き合わせるときに見る、前後の文脈の文字数。
+const CONTEXT_CHECK = 4;
+
+const leadingPoints = (text, count) => [...text].slice(0, count).join("");
+const trailingPoints = (text, count) => [...text].slice(-count).join("");
+
+// 一時editorで取り直した検索結果が、画面で選んでいたものと同じ箇所かを確かめる。
+// match ID の文字列を解析して対応付けることはしない。
+function sameOccurrence(fresh, chosen) {
+  if (!fresh || !chosen) return false;
+  if (fresh.text !== chosen.text) return false;
+  if (trailingPoints(fresh.before, CONTEXT_CHECK) !== trailingPoints(chosen.before, CONTEXT_CHECK)) return false;
+  if (leadingPoints(fresh.after, CONTEXT_CHECK) !== leadingPoints(chosen.after, CONTEXT_CHECK)) return false;
+  return true;
+}
+
 // 置換は現在のPDFへ直接変更を積まず、毎回作り直した一時editorで行う。
 // save と reopen まで成功した場合だけ、編集状態を新しいPDFへ進める。
 async function replaceSelected() {
-  if (selectedIndex < 0 || selectedIndex >= results.length) return;
+  if (selectedIndex < 0 || selectedIndex >= matches.length) return;
+  if (lastSearchedQuery === null) return;
 
-  const target = results[selectedIndex];
+  // 処理の対象は、この時点の値だけで決める。
+  // 検索文字・選択位置・置換文字を局所変数へ写し取り、途中で画面から読み直さない。
+  // 非同期処理の間に選択が変わっても、置換するのは利用者が押した時点の1件である。
+  const query = lastSearchedQuery;
+  const targetIndex = selectedIndex;
+  const chosen = matches[targetIndex];
   const replacement = elements.replaceInput.value;
 
   hidePanels();
+
+  // 事前案内どおり、異なる文字数の置換はengineへ送らない。
+  if (lengthChangeBlocked()) {
+    updateReplaceNotice();
+    return;
+  }
+
   elements.editNotice.hidden = true;
+  delete elements.editNotice.dataset.reason;
 
   // 置換前と置換後が同じなら、PDFを書き換えない。
   // 「変更 N件」は実際に変わった件数を示すため、ここで数えない。
-  if (replacement === target.runText.slice(target.start, target.end)) {
+  if (replacement === chosen.text) {
     elements.editNotice.textContent = "置換前と置換後が同じです。変更していません。";
     elements.editNotice.hidden = false;
     return;
@@ -500,21 +720,17 @@ async function replaceSelected() {
   await nextFrame();
 
   try {
+    // match ID は、それを発行したeditorだけで有効である。
+    // 一時editorでは同じ検索文字で検索し直し、同じ順番の結果を取り直す。
     const temporary = new PdfTextEditor(currentBytes);
-    const temporaryRuns = await temporary.listTextRuns();
-    const run = temporaryRuns.find((candidate) => candidate.id === target.runId);
+    const temporaryMatches = await temporary.searchText(query);
 
-    // 取り違えを防ぐため、選択時と同じ本文であることを確認してから置換する。
-    if (!run || run.text !== target.runText) {
-      throw new Error("Selected text could not be located in the current document");
-    }
+    // 並びや内容が変わっていたら、取り違えを避けて中止する。
+    if (temporaryMatches.length !== matches.length) throw new Error(STALE_SELECTION);
+    const fresh = temporaryMatches[targetIndex];
+    if (!sameOccurrence(fresh, chosen)) throw new Error(STALE_SELECTION);
 
-    // engineへはrun全体の新しい文字列を渡す。選択したoccurrenceだけを差し替える。
-    const replaced = target.runText.slice(0, target.start)
-      + replacement
-      + target.runText.slice(target.end);
-
-    await temporary.replaceText(run.id, replaced);
+    await temporary.replaceTextMatch(fresh.id, replacement);
     const savedBytes = await temporary.save();
 
     // save しただけでは成功とみなさない。開き直せることまで確認する。
@@ -526,21 +742,50 @@ async function replaceSelected() {
     editor = reopened;
     runs = reopenedRuns;
     changeCount += 1;
+    changeLog.push({ from: chosen.text, to: replacement });
     releaseObjectUrl();
 
     showRunCount(runs.length);
     showChangeCount();
+    renderChangeLog();
+
+    // 編集中PDFのプレビューを新しいBlob URLへ差し替え、「編集中」へ切り替える。
+    refreshCurrentPreview();
+
     // 置換後の本文で検索し直し、残り件数を更新する。
-    runSearch();
+    // 検索結果は、置換後のPDFを開き直した editor が発行し直したものになる。
+    await performSearch(query);
     setState("ok");
   } catch (error) {
-    // 失敗しても currentBytes / runs / 変更件数はそのまま。編集状態を壊さない。
-    const kind = error && error.message === "Selected text could not be located in the current document"
-      ? "changed-under-us"
-      : classifyError(error, { phase: "edit" });
+    // 失敗しても currentBytes / editor / 変更件数・変更履歴・プレビューはそのまま。
+    // 編集状態を壊さない。
+    const kind = classifyError(error, { phase: "edit" });
     showError(kind, error);
     setState("ng");
   }
+}
+
+/* ---------------------------------------------------------- 変更履歴 */
+
+// 現在の編集中PDFへ成功して反映された置換だけを並べる。
+// 失敗した置換・同じ文字への置換は含めない。PDF内部の情報も出さない。
+function renderChangeLog() {
+  const list = elements.changesList;
+  list.replaceChildren();
+
+  for (const change of changeLog) {
+    const item = document.createElement("li");
+    item.className = "changes__item";
+    if (change.to.length === 0) {
+      item.textContent = `「${change.from}」→ 削除`;
+    } else {
+      item.textContent = `「${change.from}」→「${change.to}」`;
+    }
+    list.append(item);
+  }
+
+  list.hidden = changeLog.length === 0;
+  elements.changesEmpty.hidden = changeLog.length > 0;
 }
 
 /* ---------------------------------------------------------------- 保存 */
@@ -555,13 +800,17 @@ function editedFileName(name) {
 async function saveEdited() {
   if (changeCount === 0 || !currentBytes) return;
 
+  // 保存対象も、この時点のバイト列とファイル名で確定させる。
+  const bytes = currentBytes;
+  const name = fileName;
+
   hidePanels();
   setState("busy");
   await nextFrame();
 
   try {
     // ダウンロード直前にも、PDFとして開き直せることを確認する。
-    const check = new PdfTextEditor(currentBytes);
+    const check = new PdfTextEditor(bytes);
     await check.listTextRuns();
   } catch (error) {
     showError(classifyError(error, { phase: "edit" }), error);
@@ -570,11 +819,11 @@ async function saveEdited() {
   }
 
   releaseObjectUrl();
-  objectUrl = URL.createObjectURL(new Blob([currentBytes], { type: "application/pdf" }));
+  objectUrl = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
 
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = editedFileName(fileName);
+  anchor.download = editedFileName(name);
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
@@ -617,6 +866,7 @@ elements.searchInput.addEventListener("input", () => {
     return;
   }
   elements.editNotice.hidden = true;
+  delete elements.editNotice.dataset.reason;
   invalidateResults(elements.searchInput.value.length === 0
     ? "検索する文字を入力してください"
     : "検索条件が変更されました。もう一度検索してください");
@@ -632,8 +882,15 @@ elements.resultsList.addEventListener("change", (event) => {
   const radio = event.target;
   if (radio && radio.name === "search-result") {
     selectedIndex = Number(radio.value);
+    updateReplaceNotice();
     updateControls();
   }
+});
+
+// 置換文字を打っている途中で、置換できるかどうかを判定して案内する。
+elements.replaceInput.addEventListener("input", () => {
+  updateReplaceNotice();
+  updateControls();
 });
 
 elements.replaceForm.addEventListener("submit", (event) => {
@@ -642,12 +899,25 @@ elements.replaceForm.addEventListener("submit", (event) => {
   replaceSelected();
 });
 
+elements.previewOriginal.addEventListener("click", () => showPreview("original"));
+elements.previewCurrent.addEventListener("click", () => showPreview("current"));
+
+// 現在選んでいる（変更前／編集中の）PDFを、そのままブラウザの別タブで開く。
+// 開くのはBlob URLだけで、外部サイトへは送らない。
+elements.previewOpen.addEventListener("click", () => {
+  const url = previewUrl();
+  if (url) window.open(url, "_blank", "noopener");
+});
+
 elements.saveButton.addEventListener("click", () => {
   if (uiState === "busy") return;
   saveEdited();
 });
 
-window.addEventListener("pagehide", releaseObjectUrl);
+window.addEventListener("pagehide", () => {
+  releaseObjectUrl();
+  releasePreviewUrls();
+});
 
 for (const type of ["dragenter", "dragover"]) {
   elements.picker.addEventListener(type, (event) => {
@@ -681,6 +951,7 @@ for (const type of ["dragover", "drop"]) {
 
 elements.debugEngine.textContent = `idontlovepdf-engine v${ENGINE_VERSION}`;
 showChangeCount();
+renderChangeLog();
 setState("idle");
 
 // index.html 側の起動失敗表示を取り消す（moduleがここまで到達できた＝読み込み成功）。

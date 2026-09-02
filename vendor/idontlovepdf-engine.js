@@ -163,6 +163,31 @@ function withStreamContext(read, bytes, cursor, context) {
     throw wrapped;
   }
 }
+var CONTINUITY_SAFE_OPERATORS = /* @__PURE__ */ new Set([
+  "Tc",
+  "Tw",
+  "Tz",
+  "Tr",
+  "TL",
+  "g",
+  "rg",
+  "k",
+  "cs",
+  "sc",
+  "scn",
+  "G",
+  "RG",
+  "K",
+  "CS",
+  "SC",
+  "SCN",
+  "BMC",
+  "BDC",
+  "EMC",
+  "MP",
+  "DP"
+]);
+var NUMBER = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
 function scanTextRuns(bytes, context = "") {
   const strings = [];
   const runs = [];
@@ -171,6 +196,7 @@ function scanTextRuns(bytes, context = "") {
   let currentFont = null;
   let lastName = null;
   let textObjectId = -1;
+  let continuityId = 0;
   while (cursor < bytes.length) {
     cursor = skipWhite(bytes, cursor);
     if (cursor >= bytes.length) break;
@@ -203,27 +229,34 @@ function scanTextRuns(bytes, context = "") {
       continue;
     }
     const operator = latin1.decode(bytes.subarray(start, cursor));
+    if (NUMBER.test(operator)) continue;
     if (operator === "BI") {
       cursor = skipInlineImage(bytes, cursor);
       strings.length = 0;
       lastName = null;
+      continuityId += 1;
     } else if (operator === "BT") {
       inText = true;
       currentFont = null;
       textObjectId += 1;
       strings.length = 0;
+      continuityId += 1;
     } else if (operator === "ET") {
       inText = false;
       strings.length = 0;
+      continuityId += 1;
     } else if (inText && operator === "Tf") {
+      if (lastName !== currentFont) continuityId += 1;
       currentFont = lastName;
       strings.length = 0;
     } else if (inText && (operator === "Tj" || operator === "'" || operator === '"' || operator === "TJ")) {
-      for (const string of strings) runs.push({ ...string, fontName: currentFont, textObjectId });
+      if (operator === "'" || operator === '"') continuityId += 1;
+      for (const string of strings) runs.push({ ...string, fontName: currentFont, textObjectId, continuityId });
       strings.length = 0;
-    } else if (!/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(operator)) {
+    } else {
       strings.length = 0;
       lastName = null;
+      if (!CONTINUITY_SAFE_OPERATORS.has(operator)) continuityId += 1;
     }
   }
   return runs;
@@ -2578,6 +2611,53 @@ function encodeSingleByte(text) {
   }
   return bytes;
 }
+var CONTEXT_RADIUS = 12;
+function searchError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+function internalRuns(editor) {
+  return editor.streams.flatMap((stream) => stream.runs.map((run, runIndex) => {
+    const id = `${stream.object.number}:${runIndex}`;
+    const mappings = stream.fontMaps.get(run.fontName);
+    return {
+      id,
+      objectNumber: stream.object.number,
+      continuityId: run.continuityId,
+      fontName: run.fontName,
+      text: decodeWithCMap(editor.pending.get(id) ?? run.value, mappings)
+    };
+  }));
+}
+function buildSegments(runs) {
+  const segments = [];
+  let current = null;
+  for (const run of runs) {
+    if (!current || current.objectNumber !== run.objectNumber || current.continuityId !== run.continuityId) {
+      current = { objectNumber: run.objectNumber, continuityId: run.continuityId, points: [], entries: [] };
+      segments.push(current);
+    }
+    const points = [...run.text];
+    current.entries.push({ run, start: current.points.length, end: current.points.length + points.length });
+    current.points.push(...points);
+  }
+  return segments;
+}
+function indexOfPoints(haystack, needle, from) {
+  for (let start = from; start + needle.length <= haystack.length; start += 1) {
+    let offset = 0;
+    while (offset < needle.length && haystack[start + offset] === needle[offset]) offset += 1;
+    if (offset === needle.length) return start;
+  }
+  return -1;
+}
+function encodeReplacement(editor, run, replacement) {
+  if (typeof replacement !== "string") return Uint8Array.from(replacement);
+  const stream = editor.streams.find((candidate) => candidate.object.number === run.objectNumber);
+  const mappings = stream.fontMaps.get(run.fontName);
+  return mappings ? encodeWithCMap(replacement, mappings) : encodeSingleByte(replacement);
+}
 function concat(chunks) {
   const result = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
   let offset = 0;
@@ -2623,6 +2703,9 @@ var PdfTextEditor = class {
     this.document = new PdfStructure(this.bytes);
     this.streams = null;
     this.pending = /* @__PURE__ */ new Map();
+    this.matches = /* @__PURE__ */ new Map();
+    this.matchNamespace = Math.random().toString(36).slice(2, 10);
+    this.matchCounter = 0;
     this.security = null;
   }
   /**
@@ -2673,10 +2756,165 @@ var PdfTextEditor = class {
     }
     const run = runs.find((candidate) => candidate.id === id);
     if (!run) throw new Error(`Unknown text run: ${id}`);
-    const stream = this.streams.find((candidate) => candidate.object.number === run.objectNumber);
-    const mappings = stream.fontMaps.get(run.fontName);
-    const bytes = typeof replacement === "string" ? mappings ? encodeWithCMap(replacement, mappings) : encodeSingleByte(replacement) : replacement;
-    this.pending.set(id, Uint8Array.from(bytes));
+    this.pending.set(id, encodeReplacement(this, run, replacement));
+    return this;
+  }
+  /**
+   * Finds `query` in the text a reader of this PDF actually sees, across the run
+   * boundaries the PDF happens to have split that text on.
+   *
+   * This is the high-level, caller-facing search. A word is very often drawn as several
+   * text-showing operands -- "令和6年度" as `[(令) 120 (和) -20 (6) 0 (年) 0 (度)] TJ`
+   * is five of them, hence five runs -- so searching the runs of listTextRuns() one by
+   * one finds single characters and nothing longer. Runs are joined here instead, but
+   * only where the content stream itself says they are consecutive body text: never
+   * across content streams, a `BT`/`ET`, a `Td`/`TD`/`Tm`/`T*`, a `'`/`"`, or a font
+   * switch (see buildSegments() and scanTextRuns()). Naively concatenating runs would
+   * match text drawn in two unrelated places on the page and then rewrite one of them.
+   *
+   * Returns one entry per occurrence, in document order, each `{ id, text, before,
+   * after, runCount, fontName }`. `before`/`after` are up to CONTEXT_RADIUS code points
+   * of surrounding text, for telling repeated hits apart. `id` is opaque: pass it back
+   * to replaceTextMatch() and do not parse it -- its shape is not part of this API and
+   * it is meaningless to any other editor instance. Ids stay valid until the next
+   * searchText() call on this editor, which supersedes them.
+   *
+   * An empty `query` is rejected with `code: "EMPTY_QUERY"` rather than matching every
+   * run: a search for nothing is a caller mistake, and answering it with "everything"
+   * invites a replace-all against the whole document.
+   *
+   * `password` is forwarded to listTextRuns() for an encrypted PDF not yet authenticated.
+   */
+  async searchText(query, password) {
+    if (typeof query !== "string") throw searchError("EMPTY_QUERY", "searchText() requires a string query");
+    if (query === "") throw searchError("EMPTY_QUERY", "searchText() requires a non-empty query; an empty string matches nothing rather than every text run");
+    await this.listTextRuns(password);
+    const queryPoints = [...query];
+    this.matches.clear();
+    const results = [];
+    for (const segment of buildSegments(internalRuns(this))) {
+      let cursor = 0;
+      for (; ; ) {
+        const start = indexOfPoints(segment.points, queryPoints, cursor);
+        if (start === -1) break;
+        const end = start + queryPoints.length;
+        const span = segment.entries.filter((entry) => entry.start < end && entry.end > start).map((entry) => ({
+          runId: entry.run.id,
+          objectNumber: entry.run.objectNumber,
+          fontName: entry.run.fontName,
+          // Snapshot of the run as it read when this match was found; the staleness
+          // check in replaceTextMatch() compares against it.
+          runText: entry.run.text,
+          charStart: Math.max(0, start - entry.start),
+          charEnd: Math.min(entry.end - entry.start, end - entry.start)
+        }));
+        const id = `${this.matchNamespace}-${this.matchCounter += 1}`;
+        const text = segment.points.slice(start, end).join("");
+        this.matches.set(id, { id, text, span });
+        results.push({
+          id,
+          text,
+          before: segment.points.slice(Math.max(0, start - CONTEXT_RADIUS), start).join(""),
+          after: segment.points.slice(end, Math.min(segment.points.length, end + CONTEXT_RADIUS)).join(""),
+          // Informational only -- how many text-showing operands this match is drawn
+          // as. A caller never needs it to replace the match; the browser PoC shows it.
+          runCount: span.length,
+          fontName: span[0]?.fontName ?? null
+        });
+        cursor = end;
+      }
+    }
+    return results;
+  }
+  /**
+   * Replaces one match from searchText(), across every run it spans, and stages the
+   * result for save() -- so a caller never has to know that the match was split into
+   * runs at all, nor call replaceText() once per piece.
+   *
+   * The match is re-checked against the document first: each run it covers must still
+   * read exactly as it did when the match was found, or this throws `code:
+   * "MATCH_STALE"` and stages nothing. Rewriting the wrong place because an id outlived
+   * the text it described is the one failure worth refusing outright.
+   *
+   * What is replaced, and what is kept:
+   *
+   * - A match inside a single run goes through the same whole-run rewrite that
+   *   replaceText() has always done, rebuilt as `prefix + replacement + suffix`, so the
+   *   parts of that run outside the match survive and single-run behaviour is unchanged.
+   * - A match spanning several runs is split back onto those runs by how many characters
+   *   each one contributed: run "申請は令" + "和6年" + "度です" replaced 令和6年度 →
+   *   令和7年度 becomes "申請は令" + "和7年" + "度です". Every string operand, every
+   *   `TJ` numeric adjustment, and the operator structure around them stay as they were
+   *   -- nothing is re-spaced, re-flowed, or re-computed.
+   * - An empty `replacement` deletes the matched text: each run keeps its prefix and
+   *   suffix, and a run lying wholly inside the match becomes an empty string operand.
+   *   The operand stays in place rather than the content stream being rebuilt around
+   *   its removal, which keeps this an ordinary incremental update.
+   *
+   * Refused, explicitly and with a stable `code`, rather than guessed at:
+   *
+   * - A multi-run replacement whose character count differs from the match's, other
+   *   than deletion: `MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED`. There is no way to divide
+   *   the extra (or missing) characters over the original operands without moving text
+   *   relative to the `TJ` adjustments that space it, i.e. without changing where
+   *   characters land on the page. Replace inside a single run, or delete, instead.
+   * - A multi-run match spanning more than one font: `MULTI_RUN_FONT_CHANGE_UNSUPPORTED`.
+   *   Each piece would have to be encoded through a different CMap. Search already
+   *   breaks continuity at a font switch, so this is a backstop, not a common path.
+   *
+   * Characters are counted in Unicode code points (`[...text]`), so a surrogate pair
+   * counts once and never as two. Grapheme clusters are not combined.
+   */
+  async replaceTextMatch(matchId, replacement) {
+    await this.listTextRuns();
+    if (this.security && this.security.modifyAllowed === false) {
+      throw new Error("Document modification is not permitted: this PDF's /P permissions disallow content changes (modify permission denied)");
+    }
+    if (typeof replacement !== "string") {
+      throw searchError("REPLACEMENT_NOT_A_STRING", "replaceTextMatch() takes the replacement as a string; use replaceText() to write raw font-encoded bytes to a single run");
+    }
+    const match = this.matches.get(matchId);
+    if (!match) {
+      throw searchError("UNKNOWN_MATCH", `Unknown search match: ${matchId} (match ids come from this editor's most recent searchText() call and are superseded by the next one)`);
+    }
+    const current = new Map(internalRuns(this).map((run) => [run.id, run]));
+    for (const entry of match.span) {
+      if (current.get(entry.runId)?.text !== entry.runText) {
+        throw searchError("MATCH_STALE", `This match is stale: the text it was found in has changed since searchText() returned it (run ${entry.runId}). Search again and replace the new match.`);
+      }
+    }
+    const replacementPoints = [...replacement];
+    let chunks;
+    if (match.span.length === 1) {
+      chunks = [replacementPoints];
+    } else {
+      const fonts = new Set(match.span.map((entry) => entry.fontName));
+      if (fonts.size > 1) {
+        throw searchError("MULTI_RUN_FONT_CHANGE_UNSUPPORTED", `This match spans ${fonts.size} fonts; replacing it would have to encode its characters through more than one font, which is not supported`);
+      }
+      const matchLength = [...match.text].length;
+      if (replacementPoints.length && replacementPoints.length !== matchLength) {
+        throw searchError(
+          "MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED",
+          `This match is drawn as ${match.span.length} separate text runs, so a replacement of ${replacementPoints.length} characters cannot be written over ${matchLength} without moving text relative to the PDF's own spacing. Use an equal-length replacement, or an empty one to delete.`
+        );
+      }
+      let cursor = 0;
+      chunks = match.span.map((entry) => {
+        const contributed = entry.charEnd - entry.charStart;
+        const chunk = replacementPoints.length ? replacementPoints.slice(cursor, cursor + contributed) : [];
+        cursor += contributed;
+        return chunk;
+      });
+    }
+    const staged = [];
+    match.span.forEach((entry, index) => {
+      const points = [...entry.runText];
+      const text = points.slice(0, entry.charStart).join("") + chunks[index].join("") + points.slice(entry.charEnd).join("");
+      if (text === entry.runText) return;
+      staged.push({ id: entry.runId, bytes: encodeReplacement(this, entry, text) });
+    });
+    for (const { id, bytes } of staged) this.pending.set(id, bytes);
     return this;
   }
   async save() {
@@ -2730,7 +2968,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.2.0";
+var ENGINE_VERSION = "0.2.1";
 export {
   ENGINE_VERSION,
   PdfTextEditor

@@ -345,13 +345,19 @@ function showChangeCount() {
 // リポジトリへ同梱したローカルファイルだけを使う。相対URLで自分自身（このmodule）の
 // 位置から解決するため、要求先は必ず本ツールと同一originになる。外部URLは使わない。
 // 取得は起動時の1回だけで、以降はこのバイト列を使い回す。
+//
+// 取得できたことと、engineが読めるフォントであることは別である。配信設定によっては
+// HTML等が200で返ることもあるため、実際に使えるかは engine の setFallbackFont() で
+// 確かめる（PDFを開いた時点で確認し、通らなければ編集画面を開かない）。
 const FALLBACK_FONT_PATH = "../vendor/fonts/BIZUDGothic-Regular.ttf";
 
 let fallbackFontBytes = null;
 
 async function loadFallbackFont() {
   const url = new URL(FALLBACK_FONT_PATH, import.meta.url);
-  const response = await fetch(url, { cache: "force-cache" });
+  // フォントを差し替えたときに古いキャッシュを使い続けないよう、毎回サーバーへ
+  // 確認させる（変更が無ければ 304 で本文は転送されない）。
+  const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) {
     throw new Error(`Failed to fetch the editing font (${FALLBACK_FONT_PATH}): HTTP ${response.status} ${response.statusText}`);
   }
@@ -374,6 +380,7 @@ async function withFallbackFont(target) {
     throw error;
   }
   await target.setFallbackFont(fallbackFontBytes);
+  elements.debugFont.textContent = `BIZ UDGothic Regular（${counter(fallbackFontBytes.length)} bytes・engineで読み込み確認済み）`;
   return target;
 }
 
@@ -483,8 +490,19 @@ async function loadFile(file) {
 
   try {
     editor = new PdfTextEditor(currentBytes);
+
+    // 編集用フォントを engine が実際に読めることを、編集画面を開く前に確かめる。
+    // ここを通らないまま検索・置換の画面を出すと、置換しようとして初めて
+    // フォントの異常が分かることになる。
+    await withFallbackFont(editor);
   } catch (error) {
     const kind = classifyError(error);
+    if (kind === "font-load-failed") {
+      // フォントそのものが使えない。どのPDFでも同じ結果になるため、
+      // 起動時に読み込めなかった場合と同じく、PDFの受け付けを止める。
+      fallbackFontBytes = null;
+      elements.debugFont.textContent = "✗ フォントとして読めない";
+    }
     showLoadFailure(kind);
     showError(kind, error);
     setState("ng");
@@ -1072,7 +1090,7 @@ async function start() {
     setState("ng");
     return;
   }
-  elements.debugFont.textContent = `BIZ UDGothic Regular（${counter(fallbackFontBytes.length)} bytes）`;
+  elements.debugFont.textContent = `${counter(fallbackFontBytes.length)} bytes 取得（フォントとして読めるかはPDFを開いた時点で確認する）`;
   setState("idle");
   window.__idontlovepdfFontReady = true;
 }

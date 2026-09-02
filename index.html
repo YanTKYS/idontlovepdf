@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PDF編集ツール</title>
-  <meta name="description" content="PDF内の文字を検索して置き換え、編集済みPDFとして保存するツール。選択したPDFは外部へ送信されません。">
+  <meta name="description" content="PDF内の文字を検索して置き換え、変更前と編集中のPDFを見比べて、編集済みPDFとして保存するツール。選択したPDFは外部へ送信されません。">
   <!-- 既定のfavicon要求（外部・同一origin問わず）を発生させない -->
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./css/style.css">
@@ -121,77 +121,139 @@
 
   </section>
 
-  <!-- ------------------------------------------------------------ 編集 -->
+  <!-- ----------------------------------------------- 編集エリア（2カラム） -->
 
-  <section class="edit" id="edit" aria-labelledby="edit-title" hidden>
+  <div class="workspace" id="workspace" hidden>
 
-    <h2 class="edit__title" id="edit-title">文字を検索</h2>
+    <!-- ---------------------------------------------------------- 編集 -->
 
-    <form class="edit__form" id="search-form">
+    <section class="edit" id="edit" aria-labelledby="edit-title">
 
-      <label class="edit__label" for="search-input">検索する文字</label>
+      <h2 class="edit__title" id="edit-title">文字を検索</h2>
 
-      <input
-        class="edit__input"
-        type="text"
-        id="search-input"
-        autocomplete="off"
-        spellcheck="false">
+      <form class="edit__form" id="search-form">
 
-      <button class="edit__button" type="submit" id="search-submit" disabled>検索</button>
+        <label class="edit__label" for="search-input">検索する文字</label>
 
-    </form>
+        <input
+          class="edit__input"
+          type="text"
+          id="search-input"
+          autocomplete="off"
+          spellcheck="false">
 
-    <p class="edit__status" id="search-status" role="status" aria-live="polite">
-      検索する文字を入力してください
-    </p>
+        <button class="edit__button" type="submit" id="search-submit" disabled>検索</button>
 
-    <!-- 検索結果 -->
+      </form>
 
-    <fieldset class="results" id="results" hidden>
+      <p class="edit__status" id="search-status" role="status" aria-live="polite">
+        検索する文字を入力してください
+      </p>
 
-      <legend class="results__legend">検索結果（1件を選んでください）</legend>
+      <!-- 検索結果 -->
 
-      <ul class="results__list" id="results-list"></ul>
+      <fieldset class="results" id="results" hidden>
 
-      <p class="results__more" id="results-more" hidden></p>
+        <legend class="results__legend">検索結果（1件を選んでください）</legend>
 
-    </fieldset>
+        <ul class="results__list" id="results-list"></ul>
 
-    <!-- 置換 -->
+        <p class="results__more" id="results-more" hidden></p>
 
-    <form class="edit__form" id="replace-form">
+      </fieldset>
 
-      <label class="edit__label" for="replace-input">置き換える文字</label>
+      <!-- 置換 -->
 
-      <input
-        class="edit__input"
-        type="text"
-        id="replace-input"
-        autocomplete="off"
-        spellcheck="false">
+      <form class="edit__form" id="replace-form">
 
-      <button class="edit__button" type="submit" id="replace-submit" disabled>置換</button>
+        <label class="edit__label" for="replace-input">置き換える文字</label>
 
-    </form>
+        <input
+          class="edit__input"
+          type="text"
+          id="replace-input"
+          autocomplete="off"
+          spellcheck="false">
 
-    <p class="edit__hint">
-      空欄のまま置換すると、選択した文字を削除します。
-    </p>
+        <button class="edit__button" type="submit" id="replace-submit" disabled>置換</button>
 
-    <p class="edit__notice" id="edit-notice" role="status" aria-live="polite" hidden></p>
+      </form>
 
-    <!-- 編集結果 -->
+      <p class="edit__hint">
+        空欄のまま置換すると、選択した文字を削除します。
+      </p>
 
-    <div class="edit__summary">
+      <p class="edit__notice" id="edit-notice" role="status" aria-live="polite" hidden></p>
 
-      <p class="edit__changes" id="edit-changes" role="status" aria-live="polite">変更 0件</p>
+    </section>
 
-      <button class="edit__save" type="button" id="save-button" disabled>編集済みPDFを保存</button>
+    <!-- ------------------------------------------------------ プレビュー -->
 
-    </div>
+    <section class="preview" id="preview" aria-labelledby="preview-title">
 
-  </section>
+      <h2 class="preview__title" id="preview-title">PDFプレビュー</h2>
+
+      <div class="preview__tabs" role="group" aria-labelledby="preview-title">
+
+        <button
+          class="preview__tab"
+          type="button"
+          id="preview-original"
+          aria-pressed="true">変更前</button>
+
+        <button
+          class="preview__tab"
+          type="button"
+          id="preview-current"
+          aria-pressed="false">編集中</button>
+
+      </div>
+
+      <p class="preview__caption" id="preview-caption" role="status" aria-live="polite">
+        変更前のPDFを表示しています。
+      </p>
+
+      <div class="preview__frame" id="preview-frame">
+
+        <iframe
+          class="preview__viewer"
+          id="preview-viewer"
+          title="PDFプレビュー"
+          src="about:blank"></iframe>
+
+        <p class="preview__fallback" id="preview-fallback" hidden>
+          このブラウザではPDFプレビューを表示できません。編集済みPDFを保存して確認してください。
+        </p>
+
+      </div>
+
+      <p class="preview__actions">
+        <button class="preview__open" type="button" id="preview-open">PDFを別タブで確認</button>
+      </p>
+
+    </section>
+
+    <!-- ------------------------------------------------- 変更内容と保存 -->
+
+    <section class="changes" id="changes" aria-labelledby="changes-title">
+
+      <h2 class="changes__title" id="changes-title">変更内容</h2>
+
+      <div class="changes__summary">
+
+        <p class="changes__count" id="edit-changes" role="status" aria-live="polite">変更 0件</p>
+
+        <button class="changes__save" type="button" id="save-button" disabled>編集済みPDFを保存</button>
+
+      </div>
+
+      <ol class="changes__list" id="changes-list" hidden></ol>
+
+      <p class="changes__empty" id="changes-empty">まだ置き換えていません。</p>
+
+    </section>
+
+  </div>
 
   <!-- -------------------------------------------------- 開発者向け詳細 -->
 

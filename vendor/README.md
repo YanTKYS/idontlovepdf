@@ -11,15 +11,15 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.2.0 |
+| version | v0.2.1 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `afb4bac7d304478606365c08728b345a5e51ad834c0716222098c116e09e8429` |
+| SHA-256 | `798f586fd4fbdb35bf509aceb20ffd878c4785af702ec732dd83c73742d4a53d` |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
-| 取得日 | 2026-09-01 |
+| 取得日 | 2026-09-02 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.2.0>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.2.1>
 
 ## 取り扱いの原則
 
@@ -28,6 +28,10 @@
 - 内部モジュール（xref parser、Object Stream parser、Predictor、CMap、暗号化・AES実装等）を本体側へコピーしたり、直接importしたりしない。
 - 本体側が利用してよいのは、bundleがexportする正式公開APIだけとする。
   - `PdfTextEditor`
+    - `listTextRuns(password?)`（読み込み確認・本文件数の概況表示に使う）
+    - `searchText(query, password?)`（本文検索。検索・置換対象の判断はこれに一本化する）
+    - `replaceTextMatch(matchId, replacement)`（検索結果1件の置換）
+    - `save()`
   - `ENGINE_VERSION`
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
@@ -54,5 +58,9 @@ engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は�
 
 ## 補足
 
-- v0.2.0 の型定義（engine側 `src/index.d.ts`）では `listTextRuns()` に引数が宣言されていないが、実装・bundleともに `listTextRuns(password)` を受け付ける。本体側の暗号化PDF対応はこの引数を利用している。本体はJavaScriptのため動作上の問題は無いが、engineの次回版で `password?: string` へ型定義を合わせる（engine側の課題）。
-- v0.2.0 の公開APIには `/P` permission（読み取り可否・変更可否）を取得する手段が無い。permission表示が必要になった場合は、engine側の公開API拡張として扱う。本体側からengine内部フィールドを参照して表示することはしない。
+- v0.2.1 で高レベルAPI `searchText()` / `replaceTextMatch()` が追加された。複数の text run へ分割された語句の検索と、同文字数の置換をengine側で扱う。本体側は run の連結・continuityの判断・PDF描画命令の解釈を行わない。
+- `replaceTextMatch()` が返す match ID は、発行した `PdfTextEditor` インスタンス専用である。別インスタンスへ流用してはならない。ID文字列を解析して対応付けることもしない。
+- 高レベルAPIのerrorは `error.code` に安定した識別子を持つ。本体側の分類は message文字列より `error.code` を優先する。
+  - `EMPTY_QUERY` / `UNKNOWN_MATCH` / `MATCH_STALE` / `MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED` / `MULTI_RUN_FONT_CHANGE_UNSUPPORTED`
+- 複数runにまたがる一致の置換は、同文字数の置換と削除（空文字）に対応する。異文字数の置換は `MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED` として明示的に拒否される（engineの安全仕様であり、不具合ではない）。
+- v0.2.1 の公開APIにも `/P` permission（読み取り可否・変更可否）を事前取得する手段は無い。permission表示が必要になった場合は、engine側の公開API拡張として扱う。本体側からengine内部フィールドを参照して表示することはしない。

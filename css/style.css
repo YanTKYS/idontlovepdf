@@ -265,6 +265,18 @@ body {
   font-size: 15px;
 }
 
+/* engineが返した「使用できない文字」。本文より目立たせて読み取りやすくする。 */
+.error__characters {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  background: var(--paper);
+  border: 1px solid #e0b6b6;
+  border-radius: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
 .error__detail {
   font-size: 13px;
   color: var(--ink-soft);

@@ -7,8 +7,14 @@
 // 方針:
 //   - PDFはブラウザ内だけで処理する。サーバーや外部サービスへ送らない。
 //   - engineの内部モジュール・内部プロパティは参照しない。正式公開APIのみを使う。
-//   - 検索と置換対象の判断は engine の高レベルAPI（searchText / replaceTextMatch）
-//     へ一本化する。run の連結・continuityの判断・PDF描画命令の解釈を本体側で行わない。
+//   - 検索と置換対象の判断は engine の高レベルAPI（searchText /
+//     checkTextMatchReplacement / replaceTextMatch）へ一本化する。
+//     run の連結・continuityの判断・PDF描画命令の解釈を本体側で行わない。
+//     置換できるかどうかを、文字数・font・PDF内部構造から本体側で推測しない。
+//   - 元のPDFのフォントに無い文字は、engineへ渡した編集用フォント（fallback font）
+//     で置き換えられる。どちらのフォントを使うかの判断はengineへ委ねる。
+//   - 編集用フォントはリポジトリへ同梱したローカルファイルだけを使う。
+//     実行時に外部（Google Fonts、GitHub等）から取得しない。
 //   - engineのversionはbundleがexportする ENGINE_VERSION から取得し、
 //     この本体側へ版数をハードコードしない。
 //   - パスワードは処理中のメモリ内だけで扱い、保存もログ出力もしない。
@@ -35,6 +41,7 @@ const elements = {
   errorTitle:      document.getElementById("error-title"),
   errorLead:       document.getElementById("error-lead"),
   errorRaw:        document.getElementById("error-raw"),
+  errorCharacters: document.getElementById("error-characters"),
   workspace:       document.getElementById("workspace"),
   searchForm:      document.getElementById("search-form"),
   searchInput:     document.getElementById("search-input"),
@@ -61,7 +68,9 @@ const elements = {
   debugEngine:     document.getElementById("debug-engine"),
   debugRuns:       document.getElementById("debug-runs"),
   debugChanges:    document.getElementById("debug-changes"),
-  debugState:      document.getElementById("debug-state")
+  debugState:      document.getElementById("debug-state"),
+  debugFont:       document.getElementById("debug-font"),
+  debugMode:       document.getElementById("debug-mode")
 };
 
 /* ------------------------------------------------------------ 画面の状態 */
@@ -92,22 +101,25 @@ function setState(name) {
 // 処理中はボタンだけでなく、検索欄・置換欄・検索結果の選択も止める。
 // 処理の途中でこれらを変えられると、画面の表示と実際の処理対象がずれる。
 // 検索結果は fieldset なので、fieldset を無効にすれば配下のradioがまとめて止まる。
+//
+// 置換ボタンは「検索結果が選ばれているか」だけで決める。
+// 置換文字数・run数・フォント・PDF内部構造から置換可否を本体側で推測しない。
+// 実際に置換できるかどうかは、置換を押した時点でengineの
+// checkTextMatchReplacement() が判断する。
 function updateControls() {
   const busy = uiState === "busy";
-  elements.fileInput.disabled = busy;
+  // 編集用フォントを読み込めていない間・読み込めなかった場合はPDFを受け付けない。
+  const ready = fallbackFontBytes !== null;
+  elements.fileInput.disabled = busy || !ready;
   elements.searchInput.disabled = busy;
   elements.replaceInput.disabled = busy;
   elements.results.disabled = busy;
   elements.searchSubmit.disabled = busy || elements.searchInput.value.length === 0;
-  elements.replaceSubmit.disabled = busy || selectedIndex < 0 || lengthChangeBlocked();
+  elements.replaceSubmit.disabled = busy || selectedIndex < 0;
   elements.saveButton.disabled = busy || changeCount === 0;
 }
 
 const counter = (value) => value.toLocaleString("ja-JP");
-
-// 文字数はUnicodeのcode point数で数える。
-// UTF-16の .length では、サロゲートペア（絵文字・一部の漢字）を2文字と数えてしまう。
-const pointLength = (text) => [...text].length;
 
 /* ---------------------------------------------------- engineのerror分類 */
 
@@ -134,9 +146,21 @@ const ERROR_KINDS = {
     title: "PDFを解析できませんでした",
     lead: "ファイルが壊れているか、このツールが読み取れない構造になっています。別のPDFでお試しください。"
   },
-  "font-missing": {
-    title: "この文字は置き換えられません",
-    lead: "入力した文字は、このPDFで使用しているフォントに含まれていないため置換できません。別の文字でお試しいただくか、元のファイル（Word等）からの修正をご検討ください。"
+  "char-unsupported": {
+    title: "置換できません",
+    lead: "置換後の文字列に、このツールでは使用できない文字が含まれています。別の文字でお試しいただくか、元のファイル（Word等）からの修正をご検討ください。"
+  },
+  "replace-unsafe": {
+    title: "この箇所は置き換えられません",
+    lead: "このPDFでは、選択した箇所を安全に置換できません。別の箇所を選んでお試しいただくか、元のファイル（Word等）からの修正をご検討ください。"
+  },
+  "requires-reopen": {
+    title: "この箇所は続けて置き換えられません",
+    lead: "一度置き換えた箇所です。編集済みPDFを保存してから、保存したPDFを開き直すと、もう一度置き換えられます。"
+  },
+  "font-load-failed": {
+    title: "編集用フォントを読み込めませんでした",
+    lead: "編集用フォントを読み込めませんでした。配置を確認してください。vendor/fonts/BIZUDGothic-Regular.ttf がサーバーへ配置され、配信できる状態かを情報担当へご確認ください。"
   },
   "modify-denied": {
     title: "このPDFは編集結果を保存できません",
@@ -155,8 +179,8 @@ const ERROR_KINDS = {
     lead: "検索する文字が空欄です。直したい文字を入力してから検索してください。"
   },
   "length-change-unsupported": {
-    title: "この箇所は同じ文字数で置き換えてください",
-    lead: "この箇所は現在、同じ文字数への置換または削除に対応しています。同じ文字数の文字を入力するか、空欄のまま置換して削除してください。"
+    title: "この箇所は置き換えられません",
+    lead: "このPDFでは、選択した箇所を今の文字数のままでは安全に置換できません。同じ文字数の文字列や、空欄にしての削除であれば置き換えられる場合があります。"
   },
   "mixed-font-unsupported": {
     title: "この箇所はまとめて置き換えられません",
@@ -168,15 +192,42 @@ const ERROR_KINDS = {
   }
 };
 
-// v0.2.1の高レベルAPIが返す安定したerror code。
+// engineの高レベルAPIが返す安定したerror code。
 // message文字列より、こちらの一致を優先して分類する。
+//
+// 画面へ出すのは一般利用者向けの言い換えだけで、code が示すPDF内部の事情
+// （CMap、glyph、Tj / TJ、text matrix、writing mode、run、object番号）は出さない。
 const ERROR_CODE_KINDS = {
   EMPTY_QUERY: "empty-query",
   UNKNOWN_MATCH: "changed-under-us",
   MATCH_STALE: "changed-under-us",
+  REPLACEMENT_NOT_A_STRING: "other",
+  MODIFICATION_NOT_PERMITTED: "modify-denied",
+
+  // 置換後の文字列を、元のフォントでも編集用フォントでも書けない。
+  FONT_ENCODING_UNSUPPORTED: "char-unsupported",
+  FALLBACK_FONT_MISSING_GLYPH: "char-unsupported",
+
+  // PDFの作りの都合で、その箇所を安全に書き換えられない（engineのfail closed）。
+  FALLBACK_FOLLOWING_TEXT_POSITION_UNSAFE: "replace-unsafe",
+  FALLBACK_OPERATOR_UNSUPPORTED: "replace-unsafe",
+  FALLBACK_MULTI_RUN_UNSUPPORTED: "replace-unsafe",
+  FALLBACK_WORD_SPACING_UNSUPPORTED: "replace-unsafe",
+  FALLBACK_LAYOUT_UNSUPPORTED: "replace-unsafe",
+  FALLBACK_WRITING_MODE_UNSUPPORTED: "replace-unsafe",
   MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED: "length-change-unsupported",
   MULTI_RUN_FONT_CHANGE_UNSUPPORTED: "mixed-font-unsupported",
-  REPLACEMENT_NOT_A_STRING: "other"
+
+  // 保存して開き直せば続けられる（本ツールは1置換ごとに保存・開き直しを行うため、
+  // 通常の操作では発生しない）。
+  FALLBACK_EDIT_REQUIRES_SAVE: "requires-reopen",
+  FALLBACK_FONT_ALREADY_IN_USE: "requires-reopen",
+
+  // 同梱した編集用フォントを読めない（配置・ファイル破損の疑い）。
+  FALLBACK_FONT_INVALID: "font-load-failed",
+
+  // 本体側で付ける印。編集用フォントを読み込めないまま編集しようとした場合。
+  FONT_NOT_LOADED: "font-load-failed"
 };
 
 const FONT_MISSING_PATTERN = /has no ToUnicode code for|String replacements are limited to single-byte characters/;
@@ -202,7 +253,7 @@ function classifyError(error, { phase = "load", passwordAttempted = false } = {}
   if (message === STALE_SELECTION) return "changed-under-us";
   if (message.startsWith("Document modification is not permitted")) return "modify-denied";
   if (message.startsWith("Saving edits to an encrypted PDF")) return "encrypted-save";
-  if (FONT_MISSING_PATTERN.test(message)) return "font-missing";
+  if (FONT_MISSING_PATTERN.test(message)) return "char-unsupported";
 
   if (error && error.passwordRequired === true) {
     if (phase === "edit") return "encrypted-save";
@@ -230,13 +281,30 @@ function errorMessage(error) {
 function hidePanels() {
   elements.password.hidden = true;
   elements.error.hidden = true;
+  elements.errorCharacters.hidden = true;
+  elements.errorCharacters.textContent = "";
 }
 
-function showError(kind, error) {
+// `characters` は engine が構造化して返した「元のPDFのフォントで書けなかった文字」。
+// message文字列を解析して文字を取り出すことはしない。
+//
+// engineは、文字が原因ではない拒否（PDFの構造上安全に置換できない場合）にも
+// 参考情報として characters を添えることがある。その文字を書けないことが
+// 原因ではないため、原因が文字である区分のときだけ画面へ出す。
+function showError(kind, error, characters) {
   const message = ERROR_KINDS[kind];
   elements.errorTitle.textContent = message.title;
   elements.errorLead.textContent = message.lead;
   elements.errorRaw.textContent = errorMessage(error);
+
+  const listed = kind === "char-unsupported" && Array.isArray(characters)
+    ? [...new Set(characters)]
+    : [];
+  elements.errorCharacters.textContent = listed.length > 0
+    ? `使用できない文字: ${listed.join("、")}`
+    : "";
+  elements.errorCharacters.hidden = listed.length === 0;
+
   elements.error.hidden = false;
 }
 
@@ -268,6 +336,52 @@ function showRunCount(count) {
 function showChangeCount() {
   elements.editChanges.textContent = `変更 ${counter(changeCount)}件`;
   elements.debugChanges.textContent = String(changeCount);
+}
+
+/* -------------------------------------------------------- 編集用フォント */
+
+// PDFのフォントに無い文字を書くために、engineへ渡す編集用フォント（fallback font）。
+//
+// リポジトリへ同梱したローカルファイルだけを使う。相対URLで自分自身（このmodule）の
+// 位置から解決するため、要求先は必ず本ツールと同一originになる。外部URLは使わない。
+// 取得は起動時の1回だけで、以降はこのバイト列を使い回す。
+//
+// 取得できたことと、engineが読めるフォントであることは別である。配信設定によっては
+// HTML等が200で返ることもあるため、実際に使えるかは engine の setFallbackFont() で
+// 確かめる（PDFを開いた時点で確認し、通らなければ編集画面を開かない）。
+const FALLBACK_FONT_PATH = "../vendor/fonts/BIZUDGothic-Regular.ttf";
+
+let fallbackFontBytes = null;
+
+async function loadFallbackFont() {
+  const url = new URL(FALLBACK_FONT_PATH, import.meta.url);
+  // フォントを差し替えたときに古いキャッシュを使い続けないよう、毎回サーバーへ
+  // 確認させる（変更が無ければ 304 で本文は転送されない）。
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch the editing font (${FALLBACK_FONT_PATH}): HTTP ${response.status} ${response.statusText}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length === 0) {
+    throw new Error(`The editing font file is empty (${FALLBACK_FONT_PATH})`);
+  }
+  return bytes;
+}
+
+// 置換に使うeditorへ、必ず編集用フォントを渡してから置換を行う。
+// どのフォントで書くか（元のフォントか編集用フォントか）はengineが決める。
+// 本体側でPDF内部のフォントを調べて判断しない。
+async function withFallbackFont(target) {
+  if (!fallbackFontBytes) {
+    // 起動時に読み込めていればここへは来ない（読み込めなければPDF自体を受け付けない）。
+    // 念のため、engineへ渡さずに編集用フォントのエラーとして扱う。
+    const error = new Error("The editing font is not loaded; the tool must not edit a PDF without it");
+    error.code = "FONT_NOT_LOADED";
+    throw error;
+  }
+  await target.setFallbackFont(fallbackFontBytes);
+  elements.debugFont.textContent = `BIZ UDGothic Regular（${counter(fallbackFontBytes.length)} bytes・engineで読み込み確認済み）`;
+  return target;
 }
 
 /* -------------------------------------------------------- ドキュメント状態 */
@@ -342,7 +456,8 @@ function resetDocument(name) {
   elements.results.hidden = true;
   elements.resultsList.replaceChildren();
   elements.resultsMore.hidden = true;
-  elements.editNotice.hidden = true;
+  elements.debugMode.textContent = "—";
+  clearReplaceNotice();
   showChangeCount();
   renderChangeLog();
 }
@@ -375,8 +490,19 @@ async function loadFile(file) {
 
   try {
     editor = new PdfTextEditor(currentBytes);
+
+    // 編集用フォントを engine が実際に読めることを、編集画面を開く前に確かめる。
+    // ここを通らないまま検索・置換の画面を出すと、置換しようとして初めて
+    // フォントの異常が分かることになる。
+    await withFallbackFont(editor);
   } catch (error) {
     const kind = classifyError(error);
+    if (kind === "font-load-failed") {
+      // フォントそのものが使えない。どのPDFでも同じ結果になるため、
+      // 起動時に読み込めなかった場合と同じく、PDFの受け付けを止める。
+      fallbackFontBytes = null;
+      elements.debugFont.textContent = "✗ フォントとして読めない";
+    }
     showLoadFailure(kind);
     showError(kind, error);
     setState("ng");
@@ -574,7 +700,6 @@ function invalidateResults(message) {
   elements.resultsList.replaceChildren();
   elements.resultsMore.hidden = true;
   elements.searchStatus.textContent = message;
-  updateReplaceNotice();
   updateControls();
 }
 
@@ -601,14 +726,13 @@ async function performSearch(query) {
     ? "一致する文字が見つかりませんでした"
     : `${counter(matches.length)}件見つかりました`;
 
-  updateReplaceNotice();
   updateControls();
   return true;
 }
 
 async function runSearch() {
   const query = elements.searchInput.value;
-  elements.editNotice.hidden = true;
+  clearReplaceNotice();
   hidePanels();
 
   // 空文字はengine側でも拒否される。画面では検索そのものを行わない。
@@ -631,38 +755,14 @@ async function runSearch() {
   }
 }
 
-/* -------------------------------------------------- 置換前の案内と可否判定 */
+/* ------------------------------------------------------------ 置換の案内 */
 
-// 複数のまとまりへ分かれて記録されている箇所は、engine v0.2.1 では
-// 同じ文字数への置換と削除にだけ対応している。
-// engineへ送ってエラーになるのを待たず、入力中に判定して案内する。
-function lengthChangeBlocked() {
-  const match = matches[selectedIndex];
-  if (!match || match.runCount <= 1) return false;
-
-  const replacement = elements.replaceInput.value;
-  // 空欄は削除として扱えるため、常に可能。
-  if (replacement.length === 0) return false;
-
-  return pointLength(replacement) !== pointLength(match.text);
-}
-
-function updateReplaceNotice() {
-  if (!lengthChangeBlocked()) {
-    if (elements.editNotice.dataset.reason === "length") {
-      elements.editNotice.hidden = true;
-      delete elements.editNotice.dataset.reason;
-    }
-    return;
-  }
-
-  const match = matches[selectedIndex];
-  elements.editNotice.textContent =
-    "この箇所は現在、同じ文字数への置換または削除に対応しています。"
-    + `「${match.text}」と同じ${counter(pointLength(match.text))}文字を入力するか、`
-    + "空欄のまま置換して削除してください。";
-  elements.editNotice.dataset.reason = "length";
-  elements.editNotice.hidden = false;
+// 置換できるかどうかを、文字数・run数・フォント・PDF内部構造から本体側で推測しない。
+// 置換可否の判断は engine の checkTextMatchReplacement() / replaceTextMatch() に
+// 一本化している。ここでは案内の消去だけを行う。
+function clearReplaceNotice() {
+  elements.editNotice.hidden = true;
+  elements.editNotice.textContent = "";
 }
 
 /* ---------------------------------------------------------------- 置換 */
@@ -683,6 +783,15 @@ function sameOccurrence(fresh, chosen) {
   return true;
 }
 
+// engine が置換を断ったときの表示。
+// checkTextMatchReplacement() は errorを投げず判定結果を返すため、
+// error と同じ経路（区分・詳細欄）へ載せ替えて案内する。
+function showRefusal(verdict) {
+  const kind = ERROR_CODE_KINDS[verdict.code] ?? "replace-unsafe";
+  const detail = new Error(`${verdict.code}: ${verdict.reason}`);
+  showError(kind, detail, verdict.characters);
+}
+
 // 置換は現在のPDFへ直接変更を積まず、毎回作り直した一時editorで行う。
 // save と reopen まで成功した場合だけ、編集状態を新しいPDFへ進める。
 async function replaceSelected() {
@@ -698,15 +807,7 @@ async function replaceSelected() {
   const replacement = elements.replaceInput.value;
 
   hidePanels();
-
-  // 事前案内どおり、異なる文字数の置換はengineへ送らない。
-  if (lengthChangeBlocked()) {
-    updateReplaceNotice();
-    return;
-  }
-
-  elements.editNotice.hidden = true;
-  delete elements.editNotice.dataset.reason;
+  clearReplaceNotice();
 
   // 置換前と置換後が同じなら、PDFを書き換えない。
   // 「変更 N件」は実際に変わった件数を示すため、ここで数えない。
@@ -722,13 +823,29 @@ async function replaceSelected() {
   try {
     // match ID は、それを発行したeditorだけで有効である。
     // 一時editorでは同じ検索文字で検索し直し、同じ順番の結果を取り直す。
+    //
+    // 置換に使うeditorには、置換の前に必ず編集用フォントを渡す。
+    // 元のPDFのフォントで書けるかどうかの判断も、編集用フォントを使うかどうかの
+    // 判断も、engine側が行う。
     const temporary = new PdfTextEditor(currentBytes);
+    await withFallbackFont(temporary);
     const temporaryMatches = await temporary.searchText(query);
 
     // 並びや内容が変わっていたら、取り違えを避けて中止する。
     if (temporaryMatches.length !== matches.length) throw new Error(STALE_SELECTION);
     const fresh = temporaryMatches[targetIndex];
     if (!sameOccurrence(fresh, chosen)) throw new Error(STALE_SELECTION);
+
+    // 置換できるかどうかは engine の事前確認へ一本化する。
+    // allowed が true のときだけ置換する。
+    const verdict = await temporary.checkTextMatchReplacement(fresh.id, replacement);
+    elements.debugMode.textContent = verdict.mode ?? `拒否（${verdict.code}）`;
+    if (!verdict.allowed) {
+      // mode / code / reason は開発者向け詳細にとどめ、画面へは言い換えだけを出す。
+      showRefusal(verdict);
+      setState("ng");
+      return;
+    }
 
     await temporary.replaceTextMatch(fresh.id, replacement);
     const savedBytes = await temporary.save();
@@ -760,7 +877,8 @@ async function replaceSelected() {
     // 失敗しても currentBytes / editor / 変更件数・変更履歴・プレビューはそのまま。
     // 編集状態を壊さない。
     const kind = classifyError(error, { phase: "edit" });
-    showError(kind, error);
+    // engine が構造化して返した「書けなかった文字」をそのまま使う。
+    showError(kind, error, error && error.characters);
     setState("ng");
   }
 }
@@ -865,8 +983,7 @@ elements.searchInput.addEventListener("input", () => {
     updateControls();
     return;
   }
-  elements.editNotice.hidden = true;
-  delete elements.editNotice.dataset.reason;
+  clearReplaceNotice();
   invalidateResults(elements.searchInput.value.length === 0
     ? "検索する文字を入力してください"
     : "検索条件が変更されました。もう一度検索してください");
@@ -882,14 +999,14 @@ elements.resultsList.addEventListener("change", (event) => {
   const radio = event.target;
   if (radio && radio.name === "search-result") {
     selectedIndex = Number(radio.value);
-    updateReplaceNotice();
     updateControls();
   }
 });
 
-// 置換文字を打っている途中で、置換できるかどうかを判定して案内する。
+// 置換文字の入力中に、本体側で置換可否を判定することはしない。
+// 入力し直したら、前回の置換についての案内だけを消す。
 elements.replaceInput.addEventListener("input", () => {
-  updateReplaceNotice();
+  clearReplaceNotice();
   updateControls();
 });
 
@@ -950,9 +1067,32 @@ for (const type of ["dragover", "drop"]) {
 /* -------------------------------------------------------------- 初期表示 */
 
 elements.debugEngine.textContent = `idontlovepdf-engine v${ENGINE_VERSION}`;
+elements.debugFont.textContent = "読み込み中…";
+elements.debugMode.textContent = "—";
 showChangeCount();
 renderChangeLog();
-setState("idle");
 
 // index.html 側の起動失敗表示を取り消す（moduleがここまで到達できた＝読み込み成功）。
 window.__idontlovepdfReady = true;
+
+// 編集用フォントは起動時に一度だけ読み込む。
+//
+// 読み込めなかった場合、fallbackなしで通常起動したように見せない。
+// 代わりのフォントを外部から取りに行くこともしない。原因が分かる案内を出し、
+// PDFの受け付けを止める（配置を直してページを再読み込みしてもらう）。
+async function start() {
+  setState("busy");
+  try {
+    fallbackFontBytes = await loadFallbackFont();
+  } catch (error) {
+    elements.debugFont.textContent = "✗ 読み込み失敗";
+    showError("font-load-failed", error);
+    setState("ng");
+    return;
+  }
+  elements.debugFont.textContent = `${counter(fallbackFontBytes.length)} bytes 取得（フォントとして読めるかはPDFを開いた時点で確認する）`;
+  setState("idle");
+  window.__idontlovepdfFontReady = true;
+}
+
+start();

@@ -114,6 +114,9 @@
 
     <p class="error__lead" id="error-lead">—</p>
 
+    <!-- engineが構造化して返した「使用できない文字」。該当する場合だけ表示する。 -->
+    <p class="error__characters" id="error-characters" hidden></p>
+
     <details class="error__detail">
       <summary>詳細（開発者向け）</summary>
       <pre class="error__raw" id="error-raw"></pre>
@@ -274,6 +277,12 @@
 
       <dt>state</dt>
       <dd id="debug-state">idle</dd>
+
+      <dt>font</dt>
+      <dd id="debug-font">—</dd>
+
+      <dt>mode</dt>
+      <dd id="debug-mode">—</dd>
 
     </dl>
 

@@ -788,9 +788,14 @@ function sameOccurrence(fresh, chosen) {
 // engine が置換を断ったときの表示。
 // checkTextMatchReplacement() は errorを投げず判定結果を返すため、
 // error と同じ経路（区分・詳細欄）へ載せ替えて案内する。
+//
+// `unsafeReason` は engine が付ける開発者向けの内訳で、無いこともある。
+// 断られた箇所をengine側へ報告するときの手がかりになるため、値をそのまま
+// 詳細欄へ載せる。中身を解釈して画面の案内を分けたりはしない。
 function showRefusal(verdict) {
   const kind = ERROR_CODE_KINDS[verdict.code] ?? "replace-unsafe";
-  const detail = new Error(`${verdict.code}: ${verdict.reason}`);
+  const suffix = verdict.unsafeReason ? ` [unsafeReason: ${verdict.unsafeReason}]` : "";
+  const detail = new Error(`${verdict.code}: ${verdict.reason}${suffix}`);
   showError(kind, detail, verdict.characters);
 }
 

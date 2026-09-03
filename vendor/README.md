@@ -17,15 +17,18 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.4.1 |
+| version | v0.4.2 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `5dbf78e0a56adf8fb28882db1cef9810e063116eb8d7180e641317345a30bee6` |
+| SHA-256 | `5255897b96d85a0d5eade796820fafc7641944e95f089515dcb9f44bc31841df` |
+| asset size | 527,397 bytes |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
 | 取得日 | 2026-09-03 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.1>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.2>
+
+取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と上表の値の双方に一致することを確認している。編集用フォントは変更していない。
 
 ### 取り扱いの原則
 
@@ -44,18 +47,24 @@
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
 
-### v0.4.1 の要点（本体側の設計に関わるもの）
+### v0.4.2 の要点（本体側の設計に関わるもの）
 
 - `setFallbackFont()` で渡したフォントを、engineが必要なときだけPDFへ埋め込む。**元PDFのフォントで書ける場合は従来どおりそのフォントを使う。** 本体側でPDF内部のフォントを調べて「fallbackが必要か」を判断しない。
 - フォントは1つの文書につき1回だけ埋め込まれる。保存・再openを挟んで置換を繰り返しても、そのたびにフォント全体が追加されることはない（engineが埋め込み済みのフォントを引き継ぐ）。
-- 置換可否は `checkTextMatchReplacement()` が `{ allowed, mode }` または `{ allowed: false, code, reason, characters? }` で返す。errorを投げない。本体側は `allowed: true` のときだけ `replaceTextMatch()` を呼ぶ。
+- 置換可否は `checkTextMatchReplacement()` が `{ allowed, mode }` または `{ allowed: false, code, reason, characters?, unsafeReason? }` で返す。errorを投げない。本体側は `allowed: true` のときだけ `replaceTextMatch()` を呼ぶ。
 - `mode` は engine が選んだ書き方（`single-run` / `same-length` / `delete` / `variable-length-safe` / `fallback-font` / `fallback-font-partial` / `fallback-font-multi-run`）である。**開発者向け情報であり、一般利用者向け画面へ出さない。**
 - 安全に置換できない構造は、推測で埋めずに拒否する（fail closed）。本体側でこれを迂回する実装を作らない。
 
-v0.4.1 で変わった点は次のとおり。
+v0.4.2 で変わった点は次のとおり。
 
-- 元PDFのフォントに無い文字への置換が、従来の `Tj` で描かれた箇所に加えて、`TJ` で描かれた箇所でも成立するようになった。engineが後続文字の位置を維持できると判断した場合に限られる。
-- `mode` は増えていない。`TJ` 専用の `mode` は無く、従来どおり `fallback-font` / `fallback-font-partial` / `fallback-font-multi-run` が返る。**本体側で `Tj` / `TJ` を判定しない。** 置換可否は引き続き `checkTextMatchReplacement()` の戻り値だけで判断する。
+- 置換箇所が占めていた幅を測るために、engineがPDF自身の持つフォント幅情報を読む範囲が広がった。従来のdirect valueに加えて、`/Widths`・`/W`・`/DW`・`/FirstChar`・`/MissingWidth`・`/DescendantFonts`・`/Encoding` 等がindirect objectとして書かれている場合も、既存のPDF object resolverで解決できる範囲へ対応した。
+- **本体側から見える公開APIは変わっていない。** `mode` は増えていない。幅情報の解決はengine内部の責務であり、**本体側で `/Widths` / `/W` / `/DW` / CID / font metrics を読まない。**
+- 幅を正確に測れない場合は、従来どおり `FALLBACK_FONT_METRICS_UNAVAILABLE` で拒否する（fail closed）。推測した幅で書くことはしない。
+- 拒否の戻り値へ、開発者向けの内訳 `unsafeReason`（例: `invalid-width-array`）が付くことがある。**一般利用者向け画面へ出さない。** 本体では「詳細（開発者向け）」欄にだけ載せている。
+
+v0.4.1 で入った次の性質は v0.4.2 でも変わっていない。
+
+- 元PDFのフォントに無い文字への置換は、`Tj` で描かれた箇所に加えて `TJ` で描かれた箇所でも成立する。engineが後続文字の位置を維持できると判断した場合に限られる。**本体側で `Tj` / `TJ` を判定しない。** 置換可否は引き続き `checkTextMatchReplacement()` の戻り値だけで判断する。
 - 後続文字の位置は維持されるが、置換後の文字列が元より幅を取る場合、後続文字と重なって見えることがある（位置を動かさないことが安全側の仕様であるため）。
 
 ### error code
@@ -75,7 +84,7 @@ v0.4.1 で変わった点は次のとおり。
 | `FALLBACK_MULTI_RUN_UNSUPPORTED` | 複数の描画単位が単純に隣接していない |
 | `FALLBACK_WORD_SPACING_UNSUPPORTED` | 単語間隔の指定があり、空白を含む置換が別扱いになる |
 | `FALLBACK_CHAR_SPACING_UNSUPPORTED` | 文字間隔の指定があり、後続文字の位置を維持できない |
-| `FALLBACK_FONT_METRICS_UNAVAILABLE` | 置換箇所が占めていた幅を正確に測れず、後続文字の位置を維持できない |
+| `FALLBACK_FONT_METRICS_UNAVAILABLE` | 置換箇所が占めていた幅を正確に測れず、後続文字の位置を維持できない（v0.4.2 で読める幅情報の範囲は広がったが、codeそのものは変わらない） |
 | `FALLBACK_LAYOUT_UNSUPPORTED` | フォント指定・サイズ等を元へ戻せない |
 | `FALLBACK_WRITING_MODE_UNSUPPORTED` | 縦書き等、横書きのfallback fontで代替できない |
 | `FALLBACK_EDIT_REQUIRES_SAVE` | 同じ箇所を続けて置換しようとした（保存して開き直せば可） |
@@ -83,6 +92,8 @@ v0.4.1 で変わった点は次のとおり。
 | `FALLBACK_FONT_INVALID` | fallback fontのバイト列を読めない |
 | `MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED` | 複数の描画単位にまたがる箇所の異文字数置換で、間隔指定があり安全に書けない |
 | `MULTI_RUN_FONT_CHANGE_UNSUPPORTED` | 箇所の途中で書体が変わっている |
+
+拒否の戻り値には、`code` / `reason` に加えて開発者向けの `unsafeReason` が付くことがある（v0.4.2）。**本体側の分類はあくまで `code` で行い、`unsafeReason` の値で画面の案内を分けない。** 値は「詳細（開発者向け）」欄へそのまま載せ、engineへ報告するときの手がかりとして使う。
 
 `FALLBACK_FONT_MISSING_GLYPH` と `FONT_ENCODING_UNSUPPORTED` は、対象文字を `characters`（1文字ずつの配列）で返す。画面へ文字を出すときはこれを使い、message文字列を解析して取り出さない。構造上の拒否にも参考情報として `characters` が付くことがあるが、その場合の原因は文字ではないため画面へ出さない。
 
@@ -92,7 +103,7 @@ engineを新しいversionへ上げるときは、次の順で行う。
 
 1. `idontlovepdf-engine` 側で新versionをReleaseする
 2. Release assetの `idontlovepdf-engine.js` と `idontlovepdf-engine.js.sha256` を取得する
-3. 取得したbundleのSHA-256が `.sha256` の値と一致することを確認する
+3. 取得したbundleのSHA-256が `.sha256` の値と一致することを確認する（一致しない場合は取り込まない）
 
    ```bash
    sha256sum idontlovepdf-engine.js
@@ -100,7 +111,7 @@ engineを新しいversionへ上げるときは、次の順で行う。
    ```
 
 4. 一致していれば `vendor/idontlovepdf-engine.js` を差し替える（一致しない場合はコミットしない）
-5. このファイルの表（version、SHA-256、取得日）を更新する
+5. このファイルの表（version、SHA-256、asset size、取得日）を更新する
 6. 静的HTTPサーバー経由でツールを開き、`ENGINE_VERSION` の表示が新しいversionになっていることを確認する
 7. 通常PDF・日本語PDF・暗号化PDFで、実ブラウザ回帰確認を行う（`README.md` の「動作確認」を参照）
 
@@ -108,7 +119,7 @@ engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は�
 
 ## 2. BIZ UDGothic（編集用フォント）
 
-元のPDFに埋め込まれたフォントは、その文書で使った文字だけを含むサブセットであることが多い。そのため「元のPDFに無い文字」へ置き換えようとすると、元のフォントでは書けない。engine v0.4.1 はこの場合に、呼び出し側が渡したフォントで置換後の文字を書く。本ツールがそのフォントとして同梱しているのが BIZ UDGothic である。
+元のPDFに埋め込まれたフォントは、その文書で使った文字だけを含むサブセットであることが多い。そのため「元のPDFに無い文字」へ置き換えようとすると、元のフォントでは書けない。engine v0.4.2 はこの場合に、呼び出し側が渡したフォントで置換後の文字を書く。本ツールがそのフォントとして同梱しているのが BIZ UDGothic である。
 
 | 項目 | 値 |
 |---|---|
@@ -121,7 +132,7 @@ engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は�
 | 用途 | 本ツールでPDFを編集するときの fallback font（元PDFのフォントに無い文字を書くため） |
 | 取得日 | 2026-09-02 |
 
-- engine v0.4.1 の開発・テストで使われているものと同じフォント・同じversionである。**別のversionや別のフォントへ勝手に置き換えない。**
+- engine v0.4.2 の開発・テストで使われているものと同じフォント・同じversionである。**別のversionや別のフォントへ勝手に置き換えない。**
 - 利用者が選ぶ設定ではない。フォント選択UIは設けない。
 - 実行時にGoogle FontsやGitHubから取得しない。同一originのローカルファイルとして読み込む。
 - 置換の結果、このフォントが実際に使われた場合だけ、保存するPDFへ埋め込まれる（約3MB増える）。元のフォントで書けた場合は埋め込まれない。

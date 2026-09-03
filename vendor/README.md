@@ -17,16 +17,16 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.4.2 |
+| version | v0.4.3 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `5255897b96d85a0d5eade796820fafc7641944e95f089515dcb9f44bc31841df` |
-| asset size | 527,397 bytes |
+| SHA-256 | `8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` |
+| asset size | 531,745 bytes |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
 | 取得日 | 2026-09-03 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.2>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.3>
 
 取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と上表の値の双方に一致することを確認している。編集用フォントは変更していない。
 
@@ -46,6 +46,14 @@
   - `ENGINE_VERSION`
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
+
+### v0.4.3 の要点（本体側の設計に関わるもの）
+
+- v0.4.2 時点では、実PDF `22550.pdf`（糸満市が公開している資料）の `/F3` が `/W 25 0 R` まで解決できるようになってもなお `FALLBACK_FONT_METRICS_UNAVAILABLE`（`unsafeReason: descendant-font-unresolved`）で拒否されていた。原因は `/DescendantFonts` がPDF仕様のもう一つの書き方——CIDFont dictionaryをarrayの中に直接書くinline dictionary（`/DescendantFonts [ << ... >> ]`）——で書かれていたことで、engine内部のarray要素の数え方がこれを誤認していた。v0.4.3 はこの誤認を修正し、`/DescendantFonts` の3形（direct reference array・indirect array object・inline dictionary）を区別して扱う。
+- **本体側から見える公開APIは変わっていない。** `mode` は増えていない。`/DescendantFonts` の書き方の区別はengine内部の責務であり、**本体側でCIDFont dictionaryやinline arrayを読まない。**
+- 取り込んだのは Release bundle 1ファイルだけである。Release assetのSHA-256が `.sha256` の値および GitHub Release 記載の値と一致することを確認したうえで差し替えた（`8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` / 531,745 bytes）。engineの `src/` や内部モジュールは複製していない。
+- **本ツールのUIから、実PDF `22550.pdf` で「令和 → しょ」（fallback font経路）が初めて成立した。** 検索 → 検索結果の選択 → 置換 → 編集中プレビュー → 保存 → 再open → 再検索まで、本体の既存フロー・既存APIだけで確認している。詳細は `docs/feasibility.md` の該当節を参照する。
+- 同じPDF・同じ箇所での「令和 → 平成」（元fontで書ける既存経路、mode `same-length`）も、別インスタンスで回帰確認した。
 
 ### v0.4.2 の要点（本体側の設計に関わるもの）
 

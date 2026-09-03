@@ -7,7 +7,7 @@
 - 現在の第一候補: `idontlovepdf-engine`（自作PDF処理エンジン）
 - 商用Web PDF SDK: 自作engineが要求水準へ届かなかった場合の代替候補
 - 運用可否: 未判定（一般職員による安定運用は未検証）
-- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.4.2） / 本番実装未着手
+- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.4.3） / 公開PDF `22550.pdf` で本体UIからの成立を確認 / 本番実装未着手
 - 最終更新: 2026-09-03
 
 ---
@@ -962,6 +962,64 @@ engine v0.4.2 は、PDF自身が書いているフォント幅情報を読む範
 
 ---
 
+### 15.8 engine v0.4.3 への更新と、公開PDF `22550.pdf` での本体UIからの成立（本ツール v0.4.3）
+
+#### 背景
+
+15.7 に残した実機確認事項のとおり、`22550.pdf` の `/F3` は v0.4.2 でも `FALLBACK_FONT_METRICS_UNAVAILABLE`（`unsafeReason: descendant-font-unresolved`）のままだった。`idontlovepdf-engine` 側の診断（`scripts/diagnose-font-metrics.js`）により、原因は `/DescendantFonts` がPDF仕様の許すもう一つの書き方——CIDFont dictionaryをarrayの中に直接書くinline dictionary（`/DescendantFonts [ << ... >> ]`）——で書かれていたことであり、`/DescendantFonts [7 0 R]` のようなindirect referenceではなかった。engine内部の `parseReferenceArray()` が、このinline dictionary内部のreference（`/Ordering`・`/Registry`・`/FontBBox`・`/StemV`・`/FontFile2`・`/W`）を、`/DescendantFonts` 自身のarray要素であるかのように誤認していたため、実際には存在する `/W` に到達できないまま拒否していた。
+
+engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、nested dictionary内部のreferenceは1つの値として読み飛ばす）により、この誤認を修正した。`/DescendantFonts` の3形（direct reference array・indirect array object・inline dictionary）を区別し、CIDFont dictionaryが一意に1つ決まる場合だけ解決する。
+
+#### 本ツール側の対応
+
+- 取り込んだのは Release bundle 1ファイルだけである。Release assetのSHA-256が `.sha256` の値および GitHub Release 記載の値と一致することを確認したうえで差し替えた（`8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` / 531,745 bytes、取得元 <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.3>）。engineの `src/` や内部モジュールは複製していない。
+- **`/DescendantFonts`・inline dictionary・CIDFont・PDF objectを読む処理を本体側へ一切追加していない。** 操作フローは従来どおり `searchText()` → `checkTextMatchReplacement()` → `allowed: true` のときだけ `replaceTextMatch()` → `save()` → 再open である。
+- error codeの分類も変えていない。`FALLBACK_FONT_METRICS_UNAVAILABLE` は引き続き `replace-unsafe`（「この箇所は置き換えられません」）として扱う。新しい分岐は追加していない。
+- 編集用フォント（BIZ UDGothic Regular 1.05）は変更していない。フォント選択UIも追加していない。
+
+#### 確認結果（公開PDF `22550.pdf`、本体UI経由）
+
+開発用サンドボックス環境からは `www.city.itoman.lg.jp` への外部通信がegress proxyにより拒否されるため（15.7 と同じ制約）、利用者からPDFの提供を受けて確認した。本体を静的HTTPサーバーから配信し、Chromium（Playwrightによる自動操作）でindex.htmlを操作した。PDFはリポジトリへコミットしておらず、fixtureとしても保存していない。確認後は作業用の一時ディレクトリごと破棄した。
+
+「令和 → しょ」（fallback font経路、engine単体検証と同じく先頭の1件を対象）。
+
+| 操作 | 結果 |
+|---|---|
+| `22550.pdf` を選択 | 成功。「Engine」欄に v0.4.3、8,595件のテキストを認識 |
+| 「令和」を検索 | 34件見つかりました |
+| 先頭の検索結果「令和8年度…」を選択し、「しょ」を入力して置換 | 成功。`checkTextMatchReplacement()` が `allowed: true` / mode `fallback-font-multi-run` を返し、`replaceTextMatch()` が成功 |
+| 編集中プレビューへの反映 | 自動的に「編集中」表示へ切り替わり、変更内容に「「令和」→「しょ」」（変更1件）が記録される |
+| 保存 → 本体で再open → 「しょ」を検索 | 保存成功。再open成功。「しょ」が1件見つかる |
+| 再open後に「令和」を検索 | 34件から33件へ減少（対象の「令和」が消えている） |
+| 後続文字「8年度」の位置 | この本体・engineと実装を共有しない独立実装（pdfminer.six）でグリフ座標を比較し、置換前後で完全一致（差 0.000pt） |
+| 保存したPDFの構造検証 | qpdf `--check` でエラーなし |
+| 独立viewerでの表示 | 保存したPDFを、本ツールのiframeとは別の独立したページ表示としてChromium本体のPDFビューアで開き、「しょ 8 年度」の表示を目視確認 |
+| 外部通信 | 実行中、同一origin以外への要求は0件 |
+
+比較確認として、別インスタンス（別ブラウザcontext）で同じ `22550.pdf` を開き直し、「令和 → 平成」（元fontで書ける既存経路）も確認した。
+
+| 操作 | 結果 |
+|---|---|
+| 「令和」→「平成」（同じ先頭の検索結果） | 成功。mode `same-length`（fallback fontを使わない） |
+| 保存 → 再open → 「平成」検索 | 成功。3件見つかる（既存の「平成」用例2件＋置換1件） |
+| 再open後に「令和」を検索 | 33件（fallback font側の置換とは別インスタンスのため、こちらは1件減） |
+
+既存機能の回帰も、同じ `22550.pdf` を使って確認した（NGなし）。1文字検索（「度」）・複数文字検索（「令和」）・空欄への置換による削除（mode `delete`）・元のフォントに無い文字を含む異文字数置換（「令和」→「しょうわ」、mode `fallback-font-multi-run`）・変更前／編集中プレビューの切り替えと変更履歴への複数件の記録・busy中の検索欄／置換欄／PDF選択の無効化（二重実行防止）・Blob URLの作成／解放回数が設計どおりの対応関係で増え続けないこと（`URL.createObjectURL` / `revokeObjectURL` を独立に計測）・編集用フォント配信失敗（HTTP 404）時の安全な停止・非PDFファイルでのエラー表示。
+
+#### 判定への影響
+
+この確認により、**v0.4.2 時点で「engine単体では成功しているが本体UIでは未確認」だった実PDF `22550.pdf` の「令和 → しょ」が、本体UIから初めて成立した。** これは engine と本体（PdfTextEditor / setFallbackFont / searchText / checkTextMatchReplacement / replaceTextMatch / save の公開APIのみ）の責務境界が実PDFでも保たれたまま機能したことを示す。
+
+一方で、この確認は次を意味しない。
+
+- 任意のPDFを編集可能であること
+- あらゆる日本語を編集可能であること
+- 一般職員向けに運用可能であること
+
+**運用可否は引き続き「未判定」である。** 今回の成功は「対応可能な実PDFの範囲が広がった」という評価にとどまる。配信環境（GitHub Pages / IIS / 庁内端末）での確認、および生成元の異なる複数の実業務PDFでの成功率の把握は、引き続き未確認事項として残っている（16章）。
+
+---
+
 ## 16. 現在の未確認事項
 
 運用可否の判定に必要な材料は、まだ揃っていない。
@@ -1018,8 +1076,8 @@ engine v0.4.2 は、PDF自身が書いているフォント幅情報を読む範
 - [x] 編集用フォントを配信できない場合に、原因の分かるエラーを表示してPDFを受け付けない（15.5）
 - [x] `TJ` で描かれた箇所への、元のフォントに無い文字の置換が、保存 → 再open → 検索まで成立し、後続文字の位置が動かない（15.6）
 - [x] フォントの幅情報がindirect objectで書かれたPDFで、fallback font置換の可否がengine側だけで判断され、断られた場合も編集状態が変化しない（15.7）
-- [ ] 公開PDF `22550.pdf` での「令和」→「しょ」の再試験（15.7。開発環境から当該PDFを取得できないため未実施）
-- [ ] 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）での、v0.4.2 における検索・置換
+- [x] 公開PDF `22550.pdf` での「令和」→「しょ」が本体UIから成立し、後続文字の位置が独立実装との比較で一致する（15.8）
+- [ ] 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）での、v0.4.3 における検索・置換
 - [ ] IISが `.ttf` を配信でき、編集用フォントを読み込めること
 - [ ] GitHub Pages上で `vendor/idontlovepdf-engine.js` がES Moduleとして読み込める（MIME type・相対path・`.nojekyll` の効き）
 - [ ] IIS等の庁内静的Webサーバーへ配置して同様に動作する
@@ -1031,18 +1089,30 @@ engine v0.4.2 は、PDF自身が書いているフォント幅情報を読む範
 
 > **「一般職員向け編集UIの設計」**
 
-検索・置換・保存、複数の描画単位にまたがる語句の検索・置換、PDFプレビューに加え、元PDFのフォントに無い文字への置換まで到達した（v0.4.2）。次は実業務PDFと配信環境での確認、および運用可否の判定に必要な材料集めである。
+検索・置換・保存、複数の描画単位にまたがる語句の検索・置換、PDFプレビューに加え、元PDFのフォントに無い文字への置換まで到達し（v0.4.2）、公開PDF `22550.pdf` での「令和 → しょ」が本体UIから成立した（v0.4.3・15.8）。次は実業務PDFの多様化と配信環境での確認、および運用可否の判定に必要な材料集めである。
 
-### 17.1 次に行うこと（配信環境での確認）
+### 17.1 次に行うこと
 
-順序は次のとおりとする。
+次フェーズは、個々のPDF固有errorを無制限に追い続けることではない。複数の異なる生成元・業務文書からなる実PDFを少数ずつ試し、次の観点ごとの成功率と失敗理由を蓄積して、「通常の自治体文書をどこまで編集できるエンジンになったか」を評価できる状態へ進める。
 
-1. 公開PDF `22550.pdf` で「令和」→「しょ」の再試験を行う（15.7 の手順・記録項目に従う）
-2. 利用者環境の実業務PDFで、v0.4.2 の検索・置換（元のフォントに無い文字を含む置換を含む）を確認する
-3. GitHub Pagesへ配信し、「16.5」の残りを確認する
-4. IIS等の庁内静的Webサーバーへ配置し、`.ttf` の配信を含めて同様に確認する
-5. 庁内端末（実運用ブラウザ・フォント構成）で確認する
-6. 確認できた時点で、15.2 / 15.4 / 15.5 / 15.6 / 15.7 / 16.5 / `README.md` の「動作確認」を更新する
+- 読み込み
+- 検索
+- 既存font置換
+- fallback font置換
+- 文字数が変わる置換
+- 保存
+- 再open
+- viewerとの互換性
+
+1件失敗するごとに本体側で回避処理を追加するのではなく、原因（engine側の適用範囲か、本体側の運用上の制約か）を分類して記録する。engine側の適用範囲拡大が必要な場合は、engine側の次課題として切り出し、本体側で迂回しない。
+
+配信環境での確認も引き続き必要である。
+
+1. 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）に加え、複合機・Adobe製品・Word等、生成元の異なる複数の実業務PDFで、v0.4.3 の検索・置換（元のフォントに無い文字を含む置換を含む）を確認する
+2. GitHub Pagesへ配信し、「16.5」の残りを確認する
+3. IIS等の庁内静的Webサーバーへ配置し、`.ttf` の配信を含めて同様に確認する
+4. 庁内端末（実運用ブラウザ・フォント構成）で確認する
+5. 確認できた時点で、15.2 / 15.4 / 15.5 / 15.6 / 15.7 / 15.8 / 16.5 / `README.md` の「動作確認」を更新する
 
 配信環境で確認できていないものを「確認済み」と記載しない。
 
@@ -1100,3 +1170,4 @@ engineのデバッグ用画面（text run一覧、object番号等）を、その
 | 2026-09-02 | engine v0.4.0 を取り込み、編集用フォント BIZ UDGothic Regular 1.05 を同梱（本ツール v0.4.0）。`setFallbackFont()` と `checkTextMatchReplacement()` の利用により、元PDFのフォントに無い文字への置換が本体の操作フロー（検索 → 置換 → 編集中プレビュー → 保存 → 再open）で成立することを確認し、15.5 として記録。本体独自の文字数制限（`lengthChangeBlocked()`）を撤去し、置換可否の判断をengineへ一本化した。13.3 を当時の記録として整理し、「埋め込みフォントに存在しない文字は編集不能」という v0.3.0 以前の状態を現在仕様として残さないよう改めた。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
 | 2026-09-03 | engine v0.4.1 の正式Releaseを取り込み（本ツール v0.4.1）。Release assetのSHA-256を `.sha256` と照合したうえで `vendor/idontlovepdf-engine.js` を差し替え、`TJ` で描かれた箇所への fallback font 置換が、本体の既存フロー（`searchText()` → `checkTextMatchReplacement()` → `replaceTextMatch()` → `save()` → 再open）と公開APIだけで成立することを 15.6 として記録。新しいerror code `FALLBACK_FONT_METRICS_UNAVAILABLE` / `FALLBACK_CHAR_SPACING_UNSUPPORTED` を既存の `replace-unsafe` 相当へ追加した以外、本体のロジック・UIは変更していない。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
 | 2026-09-03 | engine v0.4.2 の正式Releaseを取り込み（本ツール v0.4.2）。Release assetのSHA-256を `.sha256` およびRelease記載の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替え、開発環境で生成した日本語PDFによる実ブラウザ回帰（全64項目・NG 0件）を 15.7 として記録。本体は公開APIのみの利用を維持し、PDF内部構造を読む処理も新しいerror分岐も追加していない（変更は、開発者向け詳細欄へ `unsafeReason` を載せる1行のみ）。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。**実PDF `22550.pdf` は開発環境から取得できず、「令和」→「しょ」の再試験は未実施**であり、実機確認事項として残した。あわせて、v0.4.2 でも `/W` / `/Widths` 配列の要素そのものがindirect referenceの場合は解決できないことを公開APIだけで確認し、engine側の次課題として 15.7 に記録した。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
+| 2026-09-03 | engine v0.4.3 の正式Releaseを取り込み（本ツール v0.4.3）。Release assetのSHA-256を `.sha256` およびGitHub Release記載の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` / 531,745 bytes）。v0.4.3 は `/DescendantFonts` がinline dictionaryとして書かれたCIDFontへの対応を追加し、公開PDF `22550.pdf` の `/F3` で v0.4.2 まで `FALLBACK_FONT_METRICS_UNAVAILABLE` により拒否されていた「令和 → しょ」が、**本体UIから初めて成立した**ことを 15.8 として記録した。利用者から提供を受けたPDFで、静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）により、検索 → 検索結果の選択 → 置換 → 編集中プレビュー → 保存 → 再open → 再検索まで、本体の既存フロー・既存API（`searchText()` / `checkTextMatchReplacement()` / `replaceTextMatch()` / `save()`）だけで確認した。後続文字「8年度」の描画位置は、独立実装（pdfminer.six）でのグリフ座標比較により置換前後で完全一致（差 0.000pt）することを確認し、保存したPDFはqpdfの構造検証と、本ツールのiframeとは別の独立したページ表示によるChromium本体のPDFビューアでの目視確認の両方を通過した。同じPDFでの「令和 → 平成」（既存font経路、mode `same-length`）も別インスタンスで回帰確認した。本体側はPDF内部構造（`/DescendantFonts`・CIDFont等）を読む処理を追加していない。PDFはリポジトリへコミットも、fixtureとしての保存もしていない。**この確認は「対応可能な実PDFの範囲が広がった」ことを示すものであり、任意のPDFの編集・一般職員向け運用が可能になったことを意味しない。運用可否は引き続き「未判定」である。** |

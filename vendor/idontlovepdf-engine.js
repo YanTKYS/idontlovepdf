@@ -12755,6 +12755,25 @@ function topLevelInteger(text, key) {
   while (end < bytes.length && isRegular(bytes[end])) end += 1;
   return parseStrictInteger(bytesToText(bytes, offset, end));
 }
+function topLevelArrayElements(text, key) {
+  const offset = topLevelValueOffset(text, key);
+  if (offset === void 0) return null;
+  const bytes = textToBytes(text);
+  if (bytes[offset] !== 91) return null;
+  try {
+    const elements = [];
+    let cursor = skipWhite(bytes, offset + 1);
+    while (cursor < bytes.length && bytes[cursor] !== 93) {
+      const elementStart = cursor;
+      cursor = skipOneValue(bytes, cursor);
+      elements.push(bytesToText(bytes, elementStart, cursor));
+      cursor = skipWhite(bytes, cursor);
+    }
+    return bytes[cursor] === 93 ? elements : null;
+  } catch {
+    return null;
+  }
+}
 function nameValue(text, key) {
   return text.match(new RegExp(`/${key}\\s*/([A-Za-z0-9_.+-]+)`))?.[1] ?? null;
 }
@@ -14515,17 +14534,91 @@ async function identityEncoding(fontDictionary, resolve) {
   if (raw && raw.startsWith("/")) return refuse("non-identity-encoding", raw);
   return refuse("encoding-unresolved", `/Encoding ${indirect.number} ${indirect.generation} R`);
 }
-async function resolveDescendantFont(fontDictionary, resolve) {
-  const [target] = parseReferenceArray(fontDictionary, "DescendantFonts");
-  if (!target) return refuse("descendant-font-missing");
+function shapeOfObject(object) {
+  if (!object) return { kind: "unresolved", text: null };
+  if (object.dictionary) return { kind: "dictionary", stream: Boolean(object.data), text: object.dictionary };
+  if (typeof object.rawValue === "string") {
+    const raw = object.rawValue.trim();
+    const kind = raw.startsWith("[") ? "array" : raw.startsWith("/") ? "name" : "string-or-other";
+    return { kind, text: object.rawValue };
+  }
+  return { kind: "number-or-boolean", text: String(object.value) };
+}
+function rawEntryText(dictionary, key) {
+  const found = new RegExp(`/${key}(?![A-Za-z0-9])`).exec(dictionary);
+  return found ? dictionary.slice(found.index, found.index + 160) : null;
+}
+async function tracedResolve(resolve, target, trace, step) {
+  let object = null;
+  let error = null;
+  try {
+    object = await resolve(target);
+  } catch (thrown) {
+    error = thrown?.message ?? String(thrown);
+  }
+  if (trace) trace.push({ step, reference: `${target.number} ${target.generation} R`, error, ...shapeOfObject(object) });
+  return object;
+}
+var REFERENCE_ELEMENT = /^(\d+)\s+(\d+)\s+R$/;
+function classifyDescendantElement(text) {
+  const trimmed = text.trim();
+  const asReference = REFERENCE_ELEMENT.exec(trimmed);
+  if (asReference) return { kind: "reference", number: Number(asReference[1]), generation: Number(asReference[2]), label: trimmed };
+  if (trimmed.startsWith("<<") && trimmed.endsWith(">>")) return { kind: "dictionary", text: trimmed };
+  return { kind: "other", text: trimmed };
+}
+async function resolveDescendantFont(fontDictionary, resolve, trace = null) {
+  const elements = topLevelArrayElements(fontDictionary, "DescendantFonts");
+  const indirectReference = elements === null ? reference(fontDictionary, "DescendantFonts") : null;
+  const classified = elements?.map(classifyDescendantElement) ?? null;
+  const accepted = elements !== null ? elements.length === 1 : Boolean(indirectReference);
+  if (trace) {
+    trace.push({
+      step: "descendant-fonts-entry",
+      // Which shape the entry is written in. "direct-array" and "indirect-reference" are
+      // the two topLevelArrayElements()/reference() distinguish; the next hop's meaning
+      // differs between them and the trace has to say which one this is.
+      form: elements !== null ? "direct-array" : indirectReference ? "indirect-reference" : "absent",
+      raw: rawEntryText(fontDictionary, "DescendantFonts"),
+      references: (classified ?? (indirectReference ? [{ kind: "reference", label: `${indirectReference.number} ${indirectReference.generation} R` }] : [])).filter((entry) => entry.kind === "reference").map((entry) => entry.label),
+      accepted
+    });
+  }
+  if (elements !== null && elements.length === 0) return refuse("descendant-font-missing");
+  if (!indirectReference && elements === null) return refuse("descendant-font-missing");
+  if (!accepted) {
+    return refuse("descendant-font-unresolved", classified.map((entry) => entry.label ?? entry.text).join(" "));
+  }
+  const single = classified ? classified[0] : { kind: "reference", number: indirectReference.number, generation: indirectReference.generation };
+  if (single.kind === "dictionary") {
+    if (trace) trace.push({ step: "inline-dictionary", kind: "dictionary", text: single.text });
+    return { dictionary: single.text };
+  }
+  if (single.kind !== "reference") return refuse("descendant-font-unresolved", single.text);
+  const target = { number: single.number, generation: single.generation };
   const unresolved = () => refuse("descendant-font-unresolved", `${target.number} ${target.generation} R`);
-  const object = await tryResolve(resolve, target);
+  const object = await tracedResolve(resolve, target, trace, "resolve-first-reference");
   if (!object) return unresolved();
   if (object.dictionary) return { dictionary: object.dictionary };
   const inner = arrayObjectText(object);
   const nested = inner === null ? null : /^\s*(\d+)\s+(\d+)\s+R\s*$/.exec(inner);
+  if (trace) {
+    trace.push({
+      step: "nested-array-element",
+      // What the object had to be for the second hop to happen: a bare array holding
+      // exactly one reference and nothing else.
+      expected: "an array object holding exactly one `<num> <gen> R` and nothing else",
+      inner,
+      matched: Boolean(nested)
+    });
+  }
   if (!nested) return unresolved();
-  const font = await tryResolve(resolve, { number: Number(nested[1]), generation: Number(nested[2]) });
+  const font = await tracedResolve(
+    resolve,
+    { number: Number(nested[1]), generation: Number(nested[2]) },
+    trace,
+    "resolve-nested-reference"
+  );
   return font?.dictionary ? { dictionary: font.dictionary } : unresolved();
 }
 async function type0Widths(fontDictionary, resolve) {
@@ -17058,7 +17151,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.4.2";
+var ENGINE_VERSION = "0.4.3";
 export {
   ENGINE_VERSION,
   PdfTextEditor

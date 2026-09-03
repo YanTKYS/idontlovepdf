@@ -217,7 +217,9 @@ function scanTextRuns(bytes, context = "") {
   let currentFontSize = null;
   let lastName = null;
   let lastNumber = null;
+  let arrayStart = null;
   let wordSpacing = 0;
+  let charSpacing = 0;
   const graphicsStack = [];
   let textObjectId = -1;
   let continuityId = 0;
@@ -249,6 +251,15 @@ function scanTextRuns(bytes, context = "") {
       cursor = token.end;
       continue;
     }
+    if (bytes[cursor] === 91) {
+      arrayStart = cursor;
+      cursor += 1;
+      continue;
+    }
+    if (bytes[cursor] === 93) {
+      cursor += 1;
+      continue;
+    }
     if (bytes[cursor] === 47) {
       const start2 = ++cursor;
       while (isRegular(bytes[cursor])) cursor += 1;
@@ -267,6 +278,8 @@ function scanTextRuns(bytes, context = "") {
       lastNumber = Number(operator);
       continue;
     }
+    const openedArray = arrayStart;
+    arrayStart = null;
     if (operator === "BI") {
       cursor = skipInlineImage(bytes, cursor);
       strings.length = 0;
@@ -301,7 +314,10 @@ function scanTextRuns(bytes, context = "") {
       boundaryClean = false;
     } else if (inText && (operator === "Tj" || operator === "'" || operator === '"' || operator === "TJ")) {
       resolveFollowedBy(operator === "'" || operator === '"' ? "repositioned" : "text-continues");
-      if (operator === '"') wordSpacing = null;
+      if (operator === '"') {
+        wordSpacing = null;
+        charSpacing = null;
+      }
       if (operator === "'" || operator === '"') continuityId += 1;
       strings.forEach((string, index) => {
         const joinBefore = index === 0 ? joinAcrossOperators(runs, continuityId, boundaryClean, string.displacement) : { kind: "tj-array", adjustment: string.displacement };
@@ -314,7 +330,12 @@ function scanTextRuns(bytes, context = "") {
           fontSize: currentFontSize,
           // The word spacing in force where this run is drawn; null when unknown.
           wordSpacing,
+          // The character spacing in force where this run is drawn; null when unknown.
+          charSpacing,
           operator,
+          // For a `TJ` operand, the byte offset of the `[` that opens its array, so the
+          // whole `[ ... ] TJ` can be rewritten as a unit. null for every other operator.
+          arrayStart: operator === "TJ" ? openedArray : null,
           // Byte offset just past the text-showing operator that drew this run, so the
           // whole `<operand> Tj` can be rewritten as a unit rather than the operand alone.
           operatorEnd: cursor,
@@ -332,8 +353,13 @@ function scanTextRuns(bytes, context = "") {
       boundaryClean = true;
     } else {
       if (operator === "Tw") wordSpacing = lastNumber;
-      else if (operator === "q") graphicsStack.push(wordSpacing);
-      else if (operator === "Q") wordSpacing = graphicsStack.length ? graphicsStack.pop() : null;
+      else if (operator === "Tc") charSpacing = lastNumber;
+      else if (operator === "q") graphicsStack.push({ wordSpacing, charSpacing });
+      else if (operator === "Q") {
+        const restored = graphicsStack.length ? graphicsStack.pop() : { wordSpacing: null, charSpacing: null };
+        wordSpacing = restored.wordSpacing;
+        charSpacing = restored.charSpacing;
+      }
       strings.length = 0;
       lastName = null;
       lastNumber = null;
@@ -368,6 +394,52 @@ function replaceTextRuns(bytes, replacements) {
     offset += chunk.length;
   }
   return output;
+}
+function parseTextArrayRegion(bytes, start, end) {
+  const elements = [];
+  let cursor = start;
+  let insideArray = false;
+  let operators = 0;
+  while (cursor < end) {
+    cursor = skipWhite(bytes, cursor);
+    if (cursor >= end) break;
+    const byte = bytes[cursor];
+    if (byte === 91) {
+      if (insideArray) throw new Error("A TJ array cannot contain another array");
+      insideArray = true;
+      cursor += 1;
+      continue;
+    }
+    if (byte === 93) {
+      if (!insideArray) throw new Error("Unbalanced ] in a TJ region");
+      insideArray = false;
+      cursor += 1;
+      continue;
+    }
+    if (byte === 40 || byte === 60) {
+      if (!insideArray) throw new Error("A string operand outside a TJ array");
+      const token2 = byte === 40 ? readLiteral(bytes, cursor) : readHex(bytes, cursor);
+      if (token2.end > end) throw new Error("A string operand runs past the end of the TJ region");
+      elements.push({ kind: "string", start: cursor, end: token2.end, value: token2.value, syntax: token2.syntax });
+      cursor = token2.end;
+      continue;
+    }
+    const tokenStart = cursor;
+    while (cursor < end && isRegular(bytes[cursor])) cursor += 1;
+    if (cursor === tokenStart) throw new Error("Unexpected byte in a TJ region");
+    const token = latin1.decode(bytes.subarray(tokenStart, cursor));
+    if (NUMBER.test(token)) {
+      if (!insideArray) throw new Error("A number outside a TJ array is not a displacement");
+      elements.push({ kind: "number", start: tokenStart, end: cursor, value: Number(token) });
+      continue;
+    }
+    if (token !== "TJ") throw new Error(`Unexpected operator ${token} in a TJ region`);
+    if (insideArray) throw new Error("TJ inside an unterminated array");
+    operators += 1;
+  }
+  if (insideArray) throw new Error("Unterminated array in a TJ region");
+  if (!operators) throw new Error("No TJ operator in the region");
+  return elements;
 }
 
 // node_modules/opentype.js/dist/opentype.module.js
@@ -13553,6 +13625,9 @@ var FALLBACK_FONT_MARKER = "ILPFallbackFont";
 async function fingerprintFont(bytes) {
   return sha256Hex(bytes);
 }
+function glyphSpaceWidth(fallback, advanceWidth) {
+  return Math.round((advanceWidth ?? fallback.unitsPerEm) * PDF_UNITS_PER_EM / fallback.unitsPerEm);
+}
 var hex4 = (value) => value.toString(16).toUpperCase().padStart(4, "0");
 function utf16beHex(text) {
   let output = "";
@@ -13613,7 +13688,7 @@ async function buildFallbackFontObjects(fallback, numbers, glyphs, { programAlre
   const head2 = font.tables.head ?? {};
   const os22 = font.tables.os2 ?? {};
   const drawn = [...glyphs.entries()].sort((a, b) => a[0] - b[0]);
-  const widths = drawn.map(([glyphId, { advanceWidth }]) => `${glyphId} [${scale(advanceWidth)}]`).join(" ");
+  const widths = drawn.map(([glyphId, { advanceWidth }]) => `${glyphId} [${glyphSpaceWidth(fallback, advanceWidth)}]`).join(" ");
   const bfchar = [];
   for (let start = 0; start < drawn.length; start += MAX_BFCHAR_ENTRIES) {
     const group = drawn.slice(start, start + MAX_BFCHAR_ENTRIES);
@@ -13678,73 +13753,6 @@ function freeResourceName(fontDictionary) {
     const name = suffix ? `ILPFallback${suffix}` : "ILPFallback";
     if (!taken.has(name)) return name;
   }
-}
-
-// src/cmap.js
-var latin12 = new TextDecoder("latin1");
-var MAX_RANGE_LENGTH = 65536;
-function utf16be(hex) {
-  const units = [];
-  for (let index = 0; index < hex.length; index += 4) units.push(Number.parseInt(hex.slice(index, index + 4), 16));
-  return String.fromCharCode(...units);
-}
-function incrementHex(hex, amount) {
-  return (BigInt(`0x${hex}`) + BigInt(amount)).toString(16).padStart(hex.length, "0");
-}
-function parseToUnicodeCMap(bytes) {
-  const source = latin12.decode(bytes);
-  const mappings = /* @__PURE__ */ new Map();
-  for (const block of source.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
-    for (const match of block[1].matchAll(/<([0-9a-f]+)>\s*<([0-9a-f]+)>/gi)) {
-      mappings.set(match[1].toLowerCase(), utf16be(match[2]));
-    }
-  }
-  for (const block of source.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
-    for (const match of block[1].matchAll(/<([0-9a-f]+)>\s*<([0-9a-f]+)>\s*(?:<([0-9a-f]+)>|\[([^\]]+)\])/gi)) {
-      const start = BigInt(`0x${match[1]}`);
-      const end = BigInt(`0x${match[2]}`);
-      if (end < start || end - start >= BigInt(MAX_RANGE_LENGTH)) continue;
-      const destinations = match[4] ? [...match[4].matchAll(/<([0-9a-f]+)>/gi)].map((item) => item[1]) : null;
-      for (let offset = 0n; start + offset <= end; offset += 1n) {
-        const sourceCode = (start + offset).toString(16).padStart(match[1].length, "0");
-        const destination = destinations ? destinations[Number(offset)] : incrementHex(match[3], offset);
-        if (destination) mappings.set(sourceCode, utf16be(destination));
-      }
-    }
-  }
-  return mappings;
-}
-function decodeWithCMap(bytes, mappings) {
-  if (!mappings?.size) return latin12.decode(bytes);
-  const widths = [...new Set([...mappings.keys()].map((key) => key.length / 2))].sort((a, b) => b - a);
-  let output = "";
-  for (let cursor = 0; cursor < bytes.length; ) {
-    let matched = false;
-    for (const width of widths) {
-      const key = [...bytes.subarray(cursor, cursor + width)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-      if (mappings.has(key)) {
-        output += mappings.get(key);
-        cursor += width;
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) {
-      output += "\uFFFD";
-      cursor += 1;
-    }
-  }
-  return output;
-}
-function encodeWithCMap(text, mappings) {
-  const reverse = new Map([...mappings].map(([bytes, unicode]) => [unicode, bytes]));
-  const values = [];
-  for (const character of text) {
-    const hex = reverse.get(character);
-    if (!hex) throw new Error(`The existing PDF font has no ToUnicode code for ${JSON.stringify(character)}`);
-    for (let index = 0; index < hex.length; index += 2) values.push(Number.parseInt(hex.slice(index, index + 2), 16));
-  }
-  return Uint8Array.from(values);
 }
 
 // src/object-stream.js
@@ -14319,6 +14327,197 @@ var PdfStructure = class {
     return result;
   }
 };
+
+// src/font-metrics.js
+var DEFAULT_CID_WIDTH = 1e3;
+var MAX_CID_RANGE = 65536;
+var NUMBER2 = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+function directNumber(dictionary, key) {
+  const match = new RegExp(`/${key}\\s+([+-]?(?:\\d+\\.?\\d*|\\.\\d+))(?![0-9.])`).exec(dictionary);
+  return match ? Number(match[1]) : null;
+}
+function directArrayText(dictionary, key) {
+  const opener = new RegExp(`/${key}\\s*\\[`).exec(dictionary);
+  if (!opener) return null;
+  const start = opener.index + opener[0].length;
+  let depth = 1;
+  for (let index = start; index < dictionary.length; index += 1) {
+    if (dictionary[index] === "[") depth += 1;
+    else if (dictionary[index] === "]" && (depth -= 1) === 0) return dictionary.slice(start, index);
+  }
+  return null;
+}
+function numericTokens(text) {
+  if (!/^[\s\d+\-.[\]]*$/.test(text)) return null;
+  return text.match(/\[|\]|[+-]?(?:\d+\.?\d*|\.\d+)/g) ?? [];
+}
+function widthArray(dictionary) {
+  const text = directArrayText(dictionary, "Widths");
+  if (text === null) return null;
+  const tokens = numericTokens(text);
+  if (!tokens || tokens.some((token) => !NUMBER2.test(token))) return null;
+  return tokens.map(Number);
+}
+function cidWidths(dictionary) {
+  const text = directArrayText(dictionary, "W");
+  if (text === null) return /* @__PURE__ */ new Map();
+  const tokens = numericTokens(text);
+  if (!tokens) return null;
+  const widths = /* @__PURE__ */ new Map();
+  let index = 0;
+  while (index < tokens.length) {
+    if (!NUMBER2.test(tokens[index])) return null;
+    const first = Number(tokens[index]);
+    index += 1;
+    if (!Number.isInteger(first) || first < 0) return null;
+    if (tokens[index] === "[") {
+      index += 1;
+      let cid = first;
+      while (index < tokens.length && tokens[index] !== "]") {
+        if (!NUMBER2.test(tokens[index])) return null;
+        widths.set(cid, Number(tokens[index]));
+        cid += 1;
+        index += 1;
+      }
+      if (tokens[index] !== "]") return null;
+      index += 1;
+      continue;
+    }
+    if (index + 1 >= tokens.length) return null;
+    if (!NUMBER2.test(tokens[index]) || !NUMBER2.test(tokens[index + 1])) return null;
+    const last = Number(tokens[index]);
+    const width = Number(tokens[index + 1]);
+    index += 2;
+    if (!Number.isInteger(last) || last < first || last - first >= MAX_CID_RANGE) return null;
+    for (let cid = first; cid <= last; cid += 1) widths.set(cid, width);
+  }
+  return widths;
+}
+async function loadFontWidths(fontDictionary, resolve) {
+  if (/\/Subtype\s*\/Type0\b/.test(fontDictionary)) {
+    if (!/\/Encoding\s*\/Identity-H\b/.test(fontDictionary)) return null;
+    const [descendantReference] = parseReferenceArray(fontDictionary, "DescendantFonts");
+    if (!descendantReference) return null;
+    let descendant;
+    try {
+      descendant = await resolve(descendantReference);
+    } catch {
+      return null;
+    }
+    if (!/\/Subtype\s*\/CIDFontType[02]\b/.test(descendant.dictionary)) return null;
+    if (reference(descendant.dictionary, "W")) return null;
+    const widths2 = cidWidths(descendant.dictionary);
+    if (!widths2) return null;
+    const defaultWidth = directNumber(descendant.dictionary, "DW") ?? DEFAULT_CID_WIDTH;
+    if (!Number.isFinite(defaultWidth)) return null;
+    return { codeBytes: 2, widthOf: (code) => widths2.get(code) ?? defaultWidth };
+  }
+  if (!/\/Subtype\s*\/(?:Type1|TrueType|MMType1)\b/.test(fontDictionary)) return null;
+  if (reference(fontDictionary, "Widths")) return null;
+  const widths = widthArray(fontDictionary);
+  if (!widths) return null;
+  const firstChar = directNumber(fontDictionary, "FirstChar");
+  if (!Number.isInteger(firstChar) || firstChar < 0) return null;
+  let missingWidth = 0;
+  const descriptorReference = reference(fontDictionary, "FontDescriptor");
+  if (descriptorReference) {
+    try {
+      missingWidth = directNumber((await resolve(descriptorReference)).dictionary, "MissingWidth") ?? 0;
+    } catch {
+      return null;
+    }
+  }
+  if (!Number.isFinite(missingWidth)) return null;
+  return {
+    codeBytes: 1,
+    widthOf: (code) => {
+      const width = widths[code - firstChar];
+      return code >= firstChar && width !== void 0 ? width : missingWidth;
+    }
+  };
+}
+function measureCodes(metrics, bytes) {
+  if (bytes.length % metrics.codeBytes !== 0) return null;
+  let width = 0;
+  let glyphs = 0;
+  let spaces = 0;
+  for (let index = 0; index < bytes.length; index += metrics.codeBytes) {
+    const code = metrics.codeBytes === 2 ? bytes[index] << 8 | bytes[index + 1] : bytes[index];
+    const value = metrics.widthOf(code);
+    if (!Number.isFinite(value)) return null;
+    width += value;
+    glyphs += 1;
+    if (metrics.codeBytes === 1 && code === 32) spaces += 1;
+  }
+  return { width, glyphs, spaces };
+}
+
+// src/cmap.js
+var latin12 = new TextDecoder("latin1");
+var MAX_RANGE_LENGTH = 65536;
+function utf16be(hex) {
+  const units = [];
+  for (let index = 0; index < hex.length; index += 4) units.push(Number.parseInt(hex.slice(index, index + 4), 16));
+  return String.fromCharCode(...units);
+}
+function incrementHex(hex, amount) {
+  return (BigInt(`0x${hex}`) + BigInt(amount)).toString(16).padStart(hex.length, "0");
+}
+function parseToUnicodeCMap(bytes) {
+  const source = latin12.decode(bytes);
+  const mappings = /* @__PURE__ */ new Map();
+  for (const block of source.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
+    for (const match of block[1].matchAll(/<([0-9a-f]+)>\s*<([0-9a-f]+)>/gi)) {
+      mappings.set(match[1].toLowerCase(), utf16be(match[2]));
+    }
+  }
+  for (const block of source.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
+    for (const match of block[1].matchAll(/<([0-9a-f]+)>\s*<([0-9a-f]+)>\s*(?:<([0-9a-f]+)>|\[([^\]]+)\])/gi)) {
+      const start = BigInt(`0x${match[1]}`);
+      const end = BigInt(`0x${match[2]}`);
+      if (end < start || end - start >= BigInt(MAX_RANGE_LENGTH)) continue;
+      const destinations = match[4] ? [...match[4].matchAll(/<([0-9a-f]+)>/gi)].map((item) => item[1]) : null;
+      for (let offset = 0n; start + offset <= end; offset += 1n) {
+        const sourceCode = (start + offset).toString(16).padStart(match[1].length, "0");
+        const destination = destinations ? destinations[Number(offset)] : incrementHex(match[3], offset);
+        if (destination) mappings.set(sourceCode, utf16be(destination));
+      }
+    }
+  }
+  return mappings;
+}
+function decodeWithCMap(bytes, mappings) {
+  if (!mappings?.size) return latin12.decode(bytes);
+  const widths = [...new Set([...mappings.keys()].map((key) => key.length / 2))].sort((a, b) => b - a);
+  let output = "";
+  for (let cursor = 0; cursor < bytes.length; ) {
+    let matched = false;
+    for (const width of widths) {
+      const key = [...bytes.subarray(cursor, cursor + width)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      if (mappings.has(key)) {
+        output += mappings.get(key);
+        cursor += width;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      output += "\uFFFD";
+      cursor += 1;
+    }
+  }
+  return output;
+}
+function encodeWithCMap(text, mappings) {
+  const reverse = new Map([...mappings].map(([bytes, unicode]) => [unicode, bytes]));
+  const values = [];
+  for (const character of text) {
+    const hex = reverse.get(character);
+    if (!hex) throw new Error(`The existing PDF font has no ToUnicode code for ${JSON.stringify(character)}`);
+    for (let index = 0; index < hex.length; index += 2) values.push(Number.parseInt(hex.slice(index, index + 2), 16));
+  }
+  return Uint8Array.from(values);
+}
 
 // src/encryption.js
 function cfmLabel(cfm) {
@@ -15895,13 +16094,195 @@ async function adoptExistingFallbackFont(editor, fallback) {
   }
   return null;
 }
+function sameBytes(left, right) {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;
+  return true;
+}
+function formatAdjustment(value) {
+  if (!Number.isFinite(value)) return null;
+  const text = Number.isInteger(value) ? String(value === 0 ? 0 : value) : value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(text)) return null;
+  return Number(text) === value ? text : null;
+}
+function splitRunOperand(editor, entry, run) {
+  const points = [...entry.runText];
+  const parts = {
+    prefix: points.slice(0, entry.charStart).join(""),
+    matched: points.slice(entry.charStart, entry.charEnd).join(""),
+    suffix: points.slice(entry.charEnd).join("")
+  };
+  let encoded;
+  try {
+    encoded = {
+      prefix: encodeReplacement(editor, entry, parts.prefix),
+      matched: encodeReplacement(editor, entry, parts.matched),
+      suffix: encodeReplacement(editor, entry, parts.suffix)
+    };
+  } catch {
+    return null;
+  }
+  const rejoined = concat([encoded.prefix, encoded.matched, encoded.suffix]);
+  const current = editor.pending.get(entry.runId) ?? run.value;
+  return sameBytes(rejoined, current) ? { ...parts, bytes: encoded } : null;
+}
+function planTextArrayRewrite(editor, pieces, glyphs, fallback) {
+  const stream = pieces[0].stream;
+  if (pieces.some((piece) => piece.stream !== stream)) {
+    return refusal("FALLBACK_MULTI_RUN_UNSUPPORTED", "This match is drawn across more than one content stream, which cannot be rewritten as one piece", "unsupported-topology");
+  }
+  if (pieces.length > 1) {
+    const current = new Map(internalRuns(editor).map((run) => [run.id, run]));
+    for (let index = 1; index < pieces.length; index += 1) {
+      const join = current.get(pieces[index].entry.runId)?.joinBefore;
+      if (!join) return refusal("FALLBACK_MULTI_RUN_UNSUPPORTED", "This match's operands are not attached to each other in a shape this version knows", "unsupported-topology");
+      if (join.kind === "state-change") {
+        return refusal("FALLBACK_MULTI_RUN_UNSUPPORTED", "This match's operands are drawn under different text state (a Tc/Tw/Tz/Tr, colour or marked-content operator sits between them), so they cannot be redrawn in another font as one piece", "text-state-boundary");
+      }
+    }
+  }
+  const first = pieces[0].run;
+  const last = pieces.at(-1).run;
+  if (typeof first.arrayStart !== "number" || first.arrayStart >= first.start) {
+    return refusal("FALLBACK_LAYOUT_UNSUPPORTED", "This match's TJ array could not be located in the content stream");
+  }
+  const region = { start: first.arrayStart, end: last.operatorEnd };
+  let elements;
+  try {
+    elements = parseTextArrayRegion(stream.decoded, region.start, region.end);
+  } catch (error) {
+    return refusal("FALLBACK_LAYOUT_UNSUPPORTED", `The TJ operators this match is drawn by could not be read as a whole: ${error.message}`);
+  }
+  const firstIndex = elements.findIndex((element) => element.kind === "string" && element.start === first.start);
+  const lastIndex = elements.findIndex((element) => element.kind === "string" && element.start === last.start);
+  if (firstIndex === -1 || lastIndex === -1 || lastIndex < firstIndex) {
+    return refusal("FALLBACK_LAYOUT_UNSUPPORTED", "This match's operands could not be located inside the TJ operators that draw them");
+  }
+  const inside = elements.slice(firstIndex, lastIndex + 1);
+  const covered = new Set(pieces.map((piece) => piece.run.start));
+  const insideStrings = inside.filter((element) => element.kind === "string");
+  if (insideStrings.length !== pieces.length || insideStrings.some((element) => !covered.has(element.start))) {
+    return refusal("FALLBACK_LAYOUT_UNSUPPORTED", "The TJ operators this match is drawn by hold text the match does not cover between its own operands");
+  }
+  const head2 = elements.slice(0, firstIndex);
+  const tail = elements.slice(lastIndex + 1);
+  const between = inside.reduce((sum, element) => element.kind === "number" ? sum + element.value : sum, 0);
+  const firstEntry = pieces[0].entry;
+  const lastEntry = pieces.at(-1).entry;
+  const prefix = [...firstEntry.runText].slice(0, firstEntry.charStart).join("");
+  const suffix = [...lastEntry.runText].slice(lastEntry.charEnd).join("");
+  const nothingFollows = !tail.length && suffix === "";
+  let adjustment = null;
+  if (!nothingFollows || !POSITION_SAFE_AFTER.has(last.followedBy)) {
+    const splits = pieces.map((piece) => splitRunOperand(editor, piece.entry, piece.run));
+    const metrics = stream.fontWidths?.get(first.fontName);
+    if (!metrics) {
+      return refusal(
+        "FALLBACK_FONT_METRICS_UNAVAILABLE",
+        `Text is drawn after this match, so the width it occupied has to be measured to keep that text where it is -- but this document does not state the glyph widths of font /${first.fontName} in a form this engine can read exactly (a /Widths or /W array it can resolve). Nothing is estimated, so this replacement is refused.`
+      );
+    }
+    if (splits.some((split2) => !split2)) {
+      return refusal(
+        "FALLBACK_FONT_METRICS_UNAVAILABLE",
+        "The exact character codes this match is drawn with could not be recovered from the operand it sits in, so the width it occupies cannot be measured and the text after it cannot be kept in place"
+      );
+    }
+    let width = 0;
+    let glyphCount = 0;
+    let spaceCount = 0;
+    for (const split2 of splits) {
+      const measured = measureCodes(metrics, split2.bytes.matched);
+      if (!measured) {
+        return refusal("FALLBACK_FONT_METRICS_UNAVAILABLE", `This document does not give a width for every character code this match is drawn with in font /${first.fontName}, so the width it occupies cannot be measured`);
+      }
+      width += measured.width;
+      glyphCount += measured.glyphs;
+      spaceCount += measured.spaces;
+    }
+    const spacings = new Set(pieces.map((piece) => piece.run.charSpacing));
+    const charSpacing = spacings.size === 1 ? [...spacings][0] : null;
+    if (charSpacing === null || charSpacing === void 0) {
+      return refusal("FALLBACK_CHAR_SPACING_UNSUPPORTED", "The character spacing (Tc) in force where this match is drawn could not be determined, so the width it occupies cannot be measured");
+    }
+    if (charSpacing !== 0 && glyphCount !== glyphs.length) {
+      return refusal(
+        "FALLBACK_CHAR_SPACING_UNSUPPORTED",
+        `Character spacing (Tc ${charSpacing}) is in force and this replacement draws ${glyphs.length} glyphs where the original drew ${glyphCount}, so the text after it would move by the difference in spacing. A replacement drawing exactly ${glyphCount} glyphs is written normally.`
+      );
+    }
+    if (spaceCount > 0 && pieces.some((piece) => piece.run.wordSpacing !== 0)) {
+      return refusal(
+        "FALLBACK_WORD_SPACING_UNSUPPORTED",
+        "This match contains a single-byte space and word spacing (Tw) is in force, which does not reach text written through the fallback font, so the text after the match would move. Edit text drawn without word spacing, or a match that does not span a space."
+      );
+    }
+    const replacementWidth = glyphs.reduce((sum, glyph) => sum + glyphSpaceWidth(fallback, glyph.advanceWidth), 0);
+    const value = replacementWidth - width + between;
+    const formatted = formatAdjustment(value);
+    if (formatted === null || replacementWidth - Number(formatted) !== width - between) {
+      return refusal(
+        "FALLBACK_FONT_METRICS_UNAVAILABLE",
+        "The width this match occupies cannot be matched exactly by a TJ adjustment, so the text after it would move"
+      );
+    }
+    adjustment = formatted;
+  }
+  return { region, head: head2, tail, prefix, suffix, adjustment };
+}
+function buildTextArrayEdit(editor, pieces, array, glyphs, resourceName, replacement) {
+  const stream = pieces[0].stream;
+  const first = pieces[0];
+  const size = first.run.fontSize;
+  const mappings = stream.fontMaps.get(first.run.fontName);
+  const runIds = new Map(stream.runs.map((run, index) => [run.start, `${stream.object.number}:${index}`]));
+  const runTexts = [];
+  const verbatim = (element) => latin13.decode(stream.decoded.subarray(element.start, element.end));
+  const kept = (element) => {
+    if (element.kind === "number") return verbatim(element);
+    const runId = runIds.get(element.start);
+    const pending = runId === void 0 ? void 0 : editor.pending.get(runId);
+    if (runId !== void 0) runTexts.push([runId, decodeWithCMap(pending ?? element.value, mappings)]);
+    if (!pending) return verbatim(element);
+    return latin13.decode(element.syntax === "hex" ? encodeHex(pending) : encodeLiteral(pending));
+  };
+  const operand = (piece, text) => latin13.decode(
+    piece.run.syntax === "hex" ? encodeHex(encodeReplacement(editor, piece.entry, text)) : encodeLiteral(encodeReplacement(editor, piece.entry, text))
+  );
+  const leading = array.head.map(kept);
+  if (array.prefix) leading.push(operand(first, array.prefix));
+  const drawn = [];
+  if (leading.length) drawn.push(`[${leading.join(" ")}] TJ`);
+  drawn.push(`/${resourceName} ${size} Tf [${latin13.decode(encodeHex(identityEncode(glyphs)))}] TJ /${first.run.fontName} ${size} Tf`);
+  const trailing = [];
+  if (array.adjustment !== null && Number(array.adjustment) !== 0) trailing.push(array.adjustment);
+  if (array.suffix) trailing.push(operand(pieces.at(-1), array.suffix));
+  trailing.push(...array.tail.map(kept));
+  if (trailing.length) drawn.push(`[${trailing.join(" ")}] TJ`);
+  pieces.forEach((piece, index) => {
+    const text = pieces.length === 1 ? array.prefix + replacement + array.suffix : index === 0 ? array.prefix + replacement : index === pieces.length - 1 ? array.suffix : "";
+    runTexts.push([piece.entry.runId, text]);
+  });
+  return {
+    objectNumber: stream.object.number,
+    start: array.region.start,
+    end: array.region.end,
+    bytes: encoder2.encode(drawn.join(" ")),
+    runTexts
+  };
+}
 async function planFallbackReplacement(editor, match, replacement) {
   const fallback = editor.fallbackFont;
   const pieces = scannedRuns(editor, match.span);
   if (pieces.some(({ run }) => !run)) return refusal("MATCH_STALE", "This match no longer describes the document");
-  const operator = pieces.find(({ run }) => run.operator !== "Tj");
-  if (operator) {
-    return refusal("FALLBACK_OPERATOR_UNSUPPORTED", `The fallback font is written with Tj; this match is drawn by ${operator.run.operator}`);
+  const operators = new Set(pieces.map(({ run }) => run.operator));
+  const drawnByArray = operators.size === 1 && operators.has("TJ");
+  if (!drawnByArray && !(operators.size === 1 && operators.has("Tj"))) {
+    const other = pieces.find(({ run }) => run.operator !== "Tj");
+    return refusal(
+      "FALLBACK_OPERATOR_UNSUPPORTED",
+      operators.size > 1 ? `The fallback font is written with Tj or TJ; this match mixes ${[...operators].join(" and ")}` : `The fallback font is written with Tj and TJ; this match is drawn by ${other.run.operator}`
+    );
   }
   const sideways = pieces.find(({ stream, run }) => (stream.fontModes?.get(run.fontName) ?? "unknown") !== "horizontal");
   if (sideways) {
@@ -15918,7 +16299,7 @@ async function planFallbackReplacement(editor, match, replacement) {
   if (pieces.some(({ run }) => !run.fontName)) {
     return refusal("FALLBACK_LAYOUT_UNSUPPORTED", "This match has no /Tf font to restore after the fallback font");
   }
-  if (match.span.length > 1) {
+  if (!drawnByArray && match.span.length > 1) {
     const current = new Map(internalRuns(editor).map((run) => [run.id, run]));
     const obstacle = variableLengthObstacle(match.span, current);
     if (obstacle) {
@@ -15931,16 +16312,20 @@ async function planFallbackReplacement(editor, match, replacement) {
       "This text is drawn with word spacing (Tw) in force, which does not reach text written through the fallback font, so a replacement containing a space would be spaced differently from the rest of the document. Replace without a space, or edit text drawn without word spacing."
     );
   }
+  const { glyphs, missing } = glyphsFor(fallback, replacement);
+  if (missing) {
+    return { ...refusal("FALLBACK_FONT_MISSING_GLYPH", `The fallback font has no glyph for ${missing.map((character) => JSON.stringify(character)).join(", ")}`), characters: missing };
+  }
   const last = pieces.at(-1).run;
-  if (!POSITION_SAFE_AFTER.has(last.followedBy)) {
+  let array = null;
+  if (drawnByArray) {
+    array = planTextArrayRewrite(editor, pieces, glyphs, fallback);
+    if (array.allowed === false) return array;
+  } else if (!POSITION_SAFE_AFTER.has(last.followedBy)) {
     return refusal(
       "FALLBACK_FOLLOWING_TEXT_POSITION_UNSAFE",
       `Text is drawn from where this match ends (${last.followedBy}), and the fallback font's characters are not the widths the document's own font used, so that text would move. Only a match followed by ET or an explicit Td/TD/Tm/T* is redrawn in another font.`
     );
-  }
-  const { glyphs, missing } = glyphsFor(fallback, replacement);
-  if (missing) {
-    return { ...refusal("FALLBACK_FONT_MISSING_GLYPH", `The fallback font has no glyph for ${missing.map((character) => JSON.stringify(character)).join(", ")}`), characters: missing };
   }
   const base = editor.fallbackEmbedding ?? await adoptExistingFallbackFont(editor, fallback);
   const start = Math.max(editor.document.size, ...[...editor.pendingObjects.keys()].map((number) => number + 1));
@@ -15963,7 +16348,8 @@ async function planFallbackReplacement(editor, match, replacement) {
   for (const glyph of glyphs) embedded.glyphs.set(glyph.glyphId, glyph);
   const edits = [];
   try {
-    pieces.forEach(({ stream, run, entry }, index) => {
+    if (array) edits.push(buildTextArrayEdit(editor, pieces, array, glyphs, resourceNames.get(pieces[0].stream.object.number), replacement));
+    else pieces.forEach(({ stream, run, entry }, index) => {
       const points = [...entry.runText];
       const prefix = points.slice(0, entry.charStart).join("");
       const suffix = points.slice(entry.charEnd).join("");
@@ -16099,11 +16485,15 @@ function commitPlan(editor, plan) {
   for (const [objectNumber, bytes] of rebuilt) editor.pendingStreams.set(objectNumber, bytes);
   for (const edit of plan.fallback.edits) {
     if (edit.runId !== void 0) editor.fallbackRunTexts.set(edit.runId, edit.runText);
+    for (const [runId, text] of edit.runTexts ?? []) editor.fallbackRunTexts.set(runId, text);
   }
 }
 function rebuildContentStream(editor, objectNumber, fallbackEdits) {
   const stream = editor.streams.find((candidate) => candidate.object.number === objectNumber);
-  const rewritten = new Set(fallbackEdits.map((edit) => edit.runId).filter((runId) => runId !== void 0));
+  const rewritten = new Set(fallbackEdits.flatMap((edit) => [
+    ...edit.runId === void 0 ? [] : [edit.runId],
+    ...(edit.runTexts ?? []).map(([runId]) => runId)
+  ]));
   const runEdits = stream.runs.flatMap((run, index) => {
     const id = `${objectNumber}:${index}`;
     const bytes = editor.pending.get(id);
@@ -16176,15 +16566,18 @@ function writingModeOf(fontDictionary, structure) {
 async function loadFontMaps(resources, structure, security) {
   const result = /* @__PURE__ */ new Map();
   const modes = /* @__PURE__ */ new Map();
+  const widths = /* @__PURE__ */ new Map();
   for (const [name, fontReference] of await fontReferences(resources, structure, security)) {
     const font = await structure.resolveObject(fontReference, security, decryptStreamBytes);
     modes.set(name, writingModeOf(font.dictionary, structure));
+    const metrics = await loadFontWidths(font.dictionary, (target) => structure.resolveObject(target, security, decryptStreamBytes));
+    if (metrics) widths.set(name, metrics);
     const toUnicode = reference(font.dictionary, "ToUnicode");
     if (!toUnicode) continue;
     const cmapObject = structure.object(toUnicode);
     result.set(name, parseToUnicodeCMap(await decodeStream(cmapObject, "ToUnicode stream", security)));
   }
-  return { maps: result, modes };
+  return { maps: result, modes, widths };
 }
 var PdfTextEditor = class {
   constructor(input) {
@@ -16235,7 +16628,7 @@ var PdfTextEditor = class {
         const runs = scanTextRuns(decoded, `content stream object ${object.number}`);
         if (runs.length) {
           const fonts = await loadFontMaps(resources, this.document, this.security);
-          this.streams.push({ object, decoded, runs, resources, fontMaps: fonts.maps, fontModes: fonts.modes });
+          this.streams.push({ object, decoded, runs, resources, fontMaps: fonts.maps, fontModes: fonts.modes, fontWidths: fonts.widths });
         }
       }
     }
@@ -16497,7 +16890,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.4.0";
+var ENGINE_VERSION = "0.4.1";
 export {
   ENGINE_VERSION,
   PdfTextEditor

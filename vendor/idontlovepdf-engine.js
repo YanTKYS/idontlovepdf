@@ -14196,7 +14196,7 @@ var PdfStructure = class {
     }
     cursor += 3;
     const dictionary = extractDictionary(this.bytes, cursor);
-    const object = { number, generation: generation.value, dictionary: dictionary?.text ?? "", data: null, value: null };
+    const object = { number, generation: generation.value, dictionary: dictionary?.text ?? "", data: null, value: null, rawValue: null };
     if (dictionary) {
       cursor = skipWhite(this.bytes, dictionary.end);
       if (keywordAt(this.bytes, cursor, "stream")) {
@@ -14216,11 +14216,35 @@ var PdfStructure = class {
         const afterStream = skipWhite(this.bytes, cursor + length);
         if (!keywordAt(this.bytes, afterStream, "endstream")) throw new Error(`PDF stream ${number} length does not end at endstream`);
       }
+    } else if (this.bytes[skipWhite(this.bytes, cursor)] === 47) {
+      const start = skipWhite(this.bytes, cursor);
+      let valueEnd = start + 1;
+      while (isRegular(this.bytes[valueEnd])) valueEnd += 1;
+      if (!keywordAt(this.bytes, skipWhite(this.bytes, valueEnd), "endobj")) {
+        throw new Error(`PDF name object ${number} does not end at endobj`);
+      }
+      object.rawValue = decodeBinaryString(this.bytes.subarray(start, valueEnd));
+    } else if (this.bytes[skipWhite(this.bytes, cursor)] === 91) {
+      const start = skipWhite(this.bytes, cursor);
+      const valueEnd = arrayEnd(this.bytes, start);
+      if (!keywordAt(this.bytes, skipWhite(this.bytes, valueEnd), "endobj")) {
+        throw new Error(`PDF array object ${number} does not end at endobj`);
+      }
+      object.rawValue = decodeBinaryString(this.bytes.subarray(start, valueEnd));
     } else {
-      const scalar = readInteger(this.bytes, cursor);
-      const terminator = skipWhite(this.bytes, scalar.end);
-      if (!keywordAt(this.bytes, terminator, "endobj")) throw new Error(`Unsupported non-dictionary PDF object ${number}`);
-      object.value = scalar.value;
+      const start = skipWhite(this.bytes, cursor);
+      const first = this.bytes[start];
+      if (first !== 43 && first !== 45 && first !== 46 && !(first >= 48 && first <= 57)) {
+        throw new Error(`Unsupported non-dictionary PDF object ${number}`);
+      }
+      let valueEnd = start + (first === 43 || first === 45 ? 1 : 0);
+      while (this.bytes[valueEnd] >= 48 && this.bytes[valueEnd] <= 57 || this.bytes[valueEnd] === 46) valueEnd += 1;
+      const value = Number(decodeBinaryString(this.bytes.subarray(start, valueEnd)));
+      if (!Number.isFinite(value)) throw new Error(`Malformed number in PDF object ${number}`);
+      if (!keywordAt(this.bytes, skipWhite(this.bytes, valueEnd), "endobj")) {
+        throw new Error(`Unsupported non-dictionary PDF object ${number}`);
+      }
+      object.value = value;
     }
     this.cache.set(number, object);
     return object;
@@ -14332,8 +14356,52 @@ var PdfStructure = class {
 var DEFAULT_CID_WIDTH = 1e3;
 var MAX_CID_RANGE = 65536;
 var NUMBER2 = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+var FONT_METRICS_REASONS = Object.freeze([
+  /** Not a font kind whose widths this reads: not Type0, Type1, TrueType or MMType1. */
+  "unsupported-font-subtype",
+  /** A Type 3 font. Its widths are in its own glyph space via /FontMatrix, so /Widths alone does not give them. */
+  "unsupported-type3",
+  /** A Type0 whose /Encoding is a CMap other than /Identity-H: the code is then not the CID. */
+  "non-identity-encoding",
+  /** A Type0 whose /Encoding is an embedded CMap stream, which would have to be parsed to map codes to CIDs. */
+  "embedded-cmap-encoding",
+  /** A Type0 with no /Encoding at all. */
+  "missing-encoding",
+  /** A Type0 whose indirect /Encoding object could not be read. */
+  "encoding-unresolved",
+  /** A Type0 with no /DescendantFonts entry: nowhere for a CID font's widths to be stated. */
+  "descendant-font-missing",
+  /** The descendant font object could not be resolved. */
+  "descendant-font-unresolved",
+  /** The descendant font is not a CIDFontType0 or CIDFontType2. */
+  "unsupported-cid-font",
+  /** An indirect /W whose object could not be resolved. */
+  "w-unresolved",
+  /** An indirect /Widths whose object could not be resolved. */
+  "widths-unresolved",
+  /** A /W or /Widths that is not an array of numbers (or of numbers and nested arrays). */
+  "invalid-width-array",
+  /** A simple font with no /Widths at all -- a standard-14 font, whose widths are not in the file. */
+  "missing-widths",
+  /** A simple font with no /FirstChar, so the /Widths array cannot be indexed. */
+  "missing-first-char",
+  /** A /FirstChar that is not a non-negative integer, or whose indirect object could not be read. */
+  "invalid-first-char",
+  /** A /DW that is present but is not a finite number, or whose indirect object could not be read. */
+  "invalid-default-width",
+  /** A /MissingWidth that is present but is not a finite number. */
+  "invalid-missing-width",
+  /** An indirect /FontDescriptor whose object could not be resolved. */
+  "font-descriptor-unresolved"
+]);
+function refuse(reason, detail) {
+  return { metrics: null, reason, detail: detail ?? null };
+}
+function hasKey(dictionary, key) {
+  return new RegExp(`/${key}(?![A-Za-z0-9])`).test(dictionary);
+}
 function directNumber(dictionary, key) {
-  const match = new RegExp(`/${key}\\s+([+-]?(?:\\d+\\.?\\d*|\\.\\d+))(?![0-9.])`).exec(dictionary);
+  const match = new RegExp(`/${key}\\s+([+-]?(?:\\d+\\.?\\d*|\\.\\d+))(?![0-9.])(?!\\s+\\d+\\s+R)`).exec(dictionary);
   return match ? Number(match[1]) : null;
 }
 function directArrayText(dictionary, key) {
@@ -14347,20 +14415,61 @@ function directArrayText(dictionary, key) {
   }
   return null;
 }
+async function tryResolve(resolve, target) {
+  try {
+    return await resolve(target);
+  } catch {
+    return null;
+  }
+}
+function arrayObjectText(object) {
+  if (!object || object.dictionary) return null;
+  const raw = typeof object.rawValue === "string" ? object.rawValue.trim() : null;
+  if (!raw || raw[0] !== "[" || raw.at(-1) !== "]") return null;
+  return raw.slice(1, -1);
+}
+function numberObjectValue(object) {
+  if (!object || object.dictionary) return null;
+  if (typeof object.value === "number" && Number.isFinite(object.value)) return object.value;
+  const raw = typeof object.rawValue === "string" ? object.rawValue.trim() : null;
+  return raw !== null && NUMBER2.test(raw) ? Number(raw) : null;
+}
+async function resolvedNumber(dictionary, key, resolve, reasons) {
+  const direct = directNumber(dictionary, key);
+  if (direct !== null) return Number.isFinite(direct) ? { value: direct } : { reason: reasons.invalid };
+  const indirect = reference(dictionary, key);
+  if (indirect) {
+    const object = await tryResolve(resolve, indirect);
+    if (!object) return { reason: reasons.unresolved };
+    const value = numberObjectValue(object);
+    return value === null ? { reason: reasons.invalid } : { value };
+  }
+  if (hasKey(dictionary, key)) return { reason: reasons.invalid };
+  return { value: null };
+}
+async function resolvedArrayText(dictionary, key, resolve, reasons) {
+  const direct = directArrayText(dictionary, key);
+  if (direct !== null) return { text: direct };
+  const indirect = reference(dictionary, key);
+  if (indirect) {
+    const object = await tryResolve(resolve, indirect);
+    if (!object) return { reason: reasons.unresolved };
+    const text = arrayObjectText(object);
+    return text === null ? { reason: "invalid-width-array" } : { text };
+  }
+  if (hasKey(dictionary, key)) return { reason: "invalid-width-array" };
+  return { text: null };
+}
 function numericTokens(text) {
   if (!/^[\s\d+\-.[\]]*$/.test(text)) return null;
   return text.match(/\[|\]|[+-]?(?:\d+\.?\d*|\.\d+)/g) ?? [];
 }
-function widthArray(dictionary) {
-  const text = directArrayText(dictionary, "Widths");
-  if (text === null) return null;
+function widthArray(text) {
   const tokens = numericTokens(text);
   if (!tokens || tokens.some((token) => !NUMBER2.test(token))) return null;
   return tokens.map(Number);
 }
-function cidWidths(dictionary) {
-  const text = directArrayText(dictionary, "W");
-  if (text === null) return /* @__PURE__ */ new Map();
+function cidWidths(text) {
   const tokens = numericTokens(text);
   if (!tokens) return null;
   const widths = /* @__PURE__ */ new Map();
@@ -14393,48 +14502,97 @@ function cidWidths(dictionary) {
   }
   return widths;
 }
-async function loadFontWidths(fontDictionary, resolve) {
-  if (/\/Subtype\s*\/Type0\b/.test(fontDictionary)) {
-    if (!/\/Encoding\s*\/Identity-H\b/.test(fontDictionary)) return null;
-    const [descendantReference] = parseReferenceArray(fontDictionary, "DescendantFonts");
-    if (!descendantReference) return null;
-    let descendant;
-    try {
-      descendant = await resolve(descendantReference);
-    } catch {
-      return null;
-    }
-    if (!/\/Subtype\s*\/CIDFontType[02]\b/.test(descendant.dictionary)) return null;
-    if (reference(descendant.dictionary, "W")) return null;
-    const widths2 = cidWidths(descendant.dictionary);
-    if (!widths2) return null;
-    const defaultWidth = directNumber(descendant.dictionary, "DW") ?? DEFAULT_CID_WIDTH;
-    if (!Number.isFinite(defaultWidth)) return null;
-    return { codeBytes: 2, widthOf: (code) => widths2.get(code) ?? defaultWidth };
+async function identityEncoding(fontDictionary, resolve) {
+  const named = /\/Encoding\s*\/([^\s/<>[\]()]+)/.exec(fontDictionary);
+  if (named) return named[1] === "Identity-H" ? null : refuse("non-identity-encoding", `/Encoding /${named[1]}`);
+  const indirect = reference(fontDictionary, "Encoding");
+  if (!indirect) return refuse("missing-encoding");
+  const object = await tryResolve(resolve, indirect);
+  if (!object) return refuse("encoding-unresolved", `/Encoding ${indirect.number} ${indirect.generation} R`);
+  if (object.dictionary) return refuse("embedded-cmap-encoding", `/Encoding ${indirect.number} ${indirect.generation} R`);
+  const raw = typeof object.rawValue === "string" ? object.rawValue.trim() : null;
+  if (raw === "/Identity-H") return null;
+  if (raw && raw.startsWith("/")) return refuse("non-identity-encoding", raw);
+  return refuse("encoding-unresolved", `/Encoding ${indirect.number} ${indirect.generation} R`);
+}
+async function resolveDescendantFont(fontDictionary, resolve) {
+  const [target] = parseReferenceArray(fontDictionary, "DescendantFonts");
+  if (!target) return refuse("descendant-font-missing");
+  const unresolved = () => refuse("descendant-font-unresolved", `${target.number} ${target.generation} R`);
+  const object = await tryResolve(resolve, target);
+  if (!object) return unresolved();
+  if (object.dictionary) return { dictionary: object.dictionary };
+  const inner = arrayObjectText(object);
+  const nested = inner === null ? null : /^\s*(\d+)\s+(\d+)\s+R\s*$/.exec(inner);
+  if (!nested) return unresolved();
+  const font = await tryResolve(resolve, { number: Number(nested[1]), generation: Number(nested[2]) });
+  return font?.dictionary ? { dictionary: font.dictionary } : unresolved();
+}
+async function type0Widths(fontDictionary, resolve) {
+  const encoding = await identityEncoding(fontDictionary, resolve);
+  if (encoding) return encoding;
+  const descendant = await resolveDescendantFont(fontDictionary, resolve);
+  if (descendant.reason) return descendant;
+  if (!/\/Subtype\s*\/CIDFontType[02]\b/.test(descendant.dictionary)) {
+    return refuse("unsupported-cid-font", /\/Subtype\s*\/([^\s/<>[\]()]+)/.exec(descendant.dictionary)?.[0] ?? null);
   }
-  if (!/\/Subtype\s*\/(?:Type1|TrueType|MMType1)\b/.test(fontDictionary)) return null;
-  if (reference(fontDictionary, "Widths")) return null;
-  const widths = widthArray(fontDictionary);
-  if (!widths) return null;
-  const firstChar = directNumber(fontDictionary, "FirstChar");
-  if (!Number.isInteger(firstChar) || firstChar < 0) return null;
+  const array = await resolvedArrayText(descendant.dictionary, "W", resolve, { unresolved: "w-unresolved" });
+  if (array.reason) return refuse(array.reason);
+  const widths = array.text === null ? /* @__PURE__ */ new Map() : cidWidths(array.text);
+  if (!widths) return refuse("invalid-width-array", "/W");
+  const defaultWidth = await resolvedNumber(descendant.dictionary, "DW", resolve, {
+    unresolved: "invalid-default-width",
+    invalid: "invalid-default-width"
+  });
+  if (defaultWidth.reason) return refuse(defaultWidth.reason, "/DW");
+  const fallbackWidth = defaultWidth.value ?? DEFAULT_CID_WIDTH;
+  return { metrics: { codeBytes: 2, widthOf: (code) => widths.get(code) ?? fallbackWidth }, reason: null, detail: null };
+}
+async function simpleFontWidths(fontDictionary, resolve) {
+  const array = await resolvedArrayText(fontDictionary, "Widths", resolve, { unresolved: "widths-unresolved" });
+  if (array.reason) return refuse(array.reason);
+  if (array.text === null) return refuse("missing-widths");
+  const widths = widthArray(array.text);
+  if (!widths) return refuse("invalid-width-array", "/Widths");
+  const first = await resolvedNumber(fontDictionary, "FirstChar", resolve, {
+    unresolved: "invalid-first-char",
+    invalid: "invalid-first-char"
+  });
+  if (first.reason) return refuse(first.reason, "/FirstChar");
+  if (first.value === null) return refuse("missing-first-char");
+  const firstChar = first.value;
+  if (!Number.isInteger(firstChar) || firstChar < 0) return refuse("invalid-first-char", "/FirstChar");
   let missingWidth = 0;
   const descriptorReference = reference(fontDictionary, "FontDescriptor");
   if (descriptorReference) {
-    try {
-      missingWidth = directNumber((await resolve(descriptorReference)).dictionary, "MissingWidth") ?? 0;
-    } catch {
-      return null;
-    }
+    const descriptor = await tryResolve(resolve, descriptorReference);
+    if (!descriptor) return refuse("font-descriptor-unresolved", `${descriptorReference.number} ${descriptorReference.generation} R`);
+    const stated = await resolvedNumber(descriptor.dictionary, "MissingWidth", resolve, {
+      unresolved: "invalid-missing-width",
+      invalid: "invalid-missing-width"
+    });
+    if (stated.reason) return refuse(stated.reason, "/MissingWidth");
+    missingWidth = stated.value ?? 0;
   }
-  if (!Number.isFinite(missingWidth)) return null;
   return {
-    codeBytes: 1,
-    widthOf: (code) => {
-      const width = widths[code - firstChar];
-      return code >= firstChar && width !== void 0 ? width : missingWidth;
-    }
+    metrics: {
+      codeBytes: 1,
+      widthOf: (code) => {
+        const width = widths[code - firstChar];
+        return code >= firstChar && width !== void 0 ? width : missingWidth;
+      }
+    },
+    reason: null,
+    detail: null
   };
+}
+async function describeFontWidths(fontDictionary, resolve) {
+  if (/\/Subtype\s*\/Type0\b/.test(fontDictionary)) return type0Widths(fontDictionary, resolve);
+  if (/\/Subtype\s*\/Type3\b/.test(fontDictionary)) return refuse("unsupported-type3", "/Subtype /Type3");
+  if (!/\/Subtype\s*\/(?:Type1|TrueType|MMType1)\b/.test(fontDictionary)) {
+    return refuse("unsupported-font-subtype", /\/Subtype\s*\/([^\s/<>[\]()]+)/.exec(fontDictionary)?.[0] ?? null);
+  }
+  return simpleFontWidths(fontDictionary, resolve);
 }
 function measureCodes(metrics, bytes) {
   if (bytes.length % metrics.codeBytes !== 0) return null;
@@ -16179,13 +16337,15 @@ function planTextArrayRewrite(editor, pieces, glyphs, fallback) {
     if (!metrics) {
       return refusal(
         "FALLBACK_FONT_METRICS_UNAVAILABLE",
-        `Text is drawn after this match, so the width it occupied has to be measured to keep that text where it is -- but this document does not state the glyph widths of font /${first.fontName} in a form this engine can read exactly (a /Widths or /W array it can resolve). Nothing is estimated, so this replacement is refused.`
+        `Text is drawn after this match, so the width it occupied has to be measured to keep that text where it is -- but this document does not state the glyph widths of font /${first.fontName} in a form this engine can read exactly (a /Widths or /W array it can resolve). Nothing is estimated, so this replacement is refused.`,
+        stream.fontWidthReasons?.get(first.fontName)
       );
     }
     if (splits.some((split2) => !split2)) {
       return refusal(
         "FALLBACK_FONT_METRICS_UNAVAILABLE",
-        "The exact character codes this match is drawn with could not be recovered from the operand it sits in, so the width it occupies cannot be measured and the text after it cannot be kept in place"
+        "The exact character codes this match is drawn with could not be recovered from the operand it sits in, so the width it occupies cannot be measured and the text after it cannot be kept in place",
+        "operand-codes-unrecoverable"
       );
     }
     let width = 0;
@@ -16194,7 +16354,7 @@ function planTextArrayRewrite(editor, pieces, glyphs, fallback) {
     for (const split2 of splits) {
       const measured = measureCodes(metrics, split2.bytes.matched);
       if (!measured) {
-        return refusal("FALLBACK_FONT_METRICS_UNAVAILABLE", `This document does not give a width for every character code this match is drawn with in font /${first.fontName}, so the width it occupies cannot be measured`);
+        return refusal("FALLBACK_FONT_METRICS_UNAVAILABLE", `This document does not give a width for every character code this match is drawn with in font /${first.fontName}, so the width it occupies cannot be measured`, "code-width-unavailable");
       }
       width += measured.width;
       glyphCount += measured.glyphs;
@@ -16223,7 +16383,8 @@ function planTextArrayRewrite(editor, pieces, glyphs, fallback) {
     if (formatted === null || replacementWidth - Number(formatted) !== width - between) {
       return refusal(
         "FALLBACK_FONT_METRICS_UNAVAILABLE",
-        "The width this match occupies cannot be matched exactly by a TJ adjustment, so the text after it would move"
+        "The width this match occupies cannot be matched exactly by a TJ adjustment, so the text after it would move",
+        "adjustment-not-representable"
       );
     }
     adjustment = formatted;
@@ -16556,7 +16717,12 @@ function writingModeOf(fontDictionary, structure) {
   const indirect = reference(fontDictionary, "Encoding");
   if (!indirect) return "unknown";
   try {
-    const wmode = structure.object(indirect).dictionary.match(/\/WMode\s+(\d+)/);
+    const object = structure.object(indirect);
+    if (!object.dictionary && typeof object.rawValue === "string" && object.rawValue.startsWith("/")) {
+      if (/-V$/.test(object.rawValue)) return "vertical";
+      return /-H$/.test(object.rawValue) ? "horizontal" : "unknown";
+    }
+    const wmode = object.dictionary.match(/\/WMode\s+(\d+)/);
     if (!wmode) return "unknown";
     return wmode[1] === "1" ? "vertical" : "horizontal";
   } catch {
@@ -16567,17 +16733,19 @@ async function loadFontMaps(resources, structure, security) {
   const result = /* @__PURE__ */ new Map();
   const modes = /* @__PURE__ */ new Map();
   const widths = /* @__PURE__ */ new Map();
+  const widthReasons = /* @__PURE__ */ new Map();
   for (const [name, fontReference] of await fontReferences(resources, structure, security)) {
     const font = await structure.resolveObject(fontReference, security, decryptStreamBytes);
     modes.set(name, writingModeOf(font.dictionary, structure));
-    const metrics = await loadFontWidths(font.dictionary, (target) => structure.resolveObject(target, security, decryptStreamBytes));
+    const { metrics, reason } = await describeFontWidths(font.dictionary, (target) => structure.resolveObject(target, security, decryptStreamBytes));
     if (metrics) widths.set(name, metrics);
+    else widthReasons.set(name, reason);
     const toUnicode = reference(font.dictionary, "ToUnicode");
     if (!toUnicode) continue;
     const cmapObject = structure.object(toUnicode);
     result.set(name, parseToUnicodeCMap(await decodeStream(cmapObject, "ToUnicode stream", security)));
   }
-  return { maps: result, modes, widths };
+  return { maps: result, modes, widths, widthReasons };
 }
 var PdfTextEditor = class {
   constructor(input) {
@@ -16628,7 +16796,7 @@ var PdfTextEditor = class {
         const runs = scanTextRuns(decoded, `content stream object ${object.number}`);
         if (runs.length) {
           const fonts = await loadFontMaps(resources, this.document, this.security);
-          this.streams.push({ object, decoded, runs, resources, fontMaps: fonts.maps, fontModes: fonts.modes, fontWidths: fonts.widths });
+          this.streams.push({ object, decoded, runs, resources, fontMaps: fonts.maps, fontModes: fonts.modes, fontWidths: fonts.widths, fontWidthReasons: fonts.widthReasons });
         }
       }
     }
@@ -16890,7 +17058,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.4.1";
+var ENGINE_VERSION = "0.4.2";
 export {
   ENGINE_VERSION,
   PdfTextEditor

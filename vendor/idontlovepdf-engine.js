@@ -16231,8 +16231,11 @@ var REPLACEMENT_MODE = {
   fallbackFontMultiRun: "fallback-font-multi-run"
 };
 var POSITION_SAFE_AFTER = /* @__PURE__ */ new Set(["end-of-text-object", "repositioned"]);
-function refusal(code, reason, unsafeReason) {
-  return unsafeReason ? { allowed: false, code, reason, unsafeReason } : { allowed: false, code, reason };
+function refusal(code, reason, unsafeReason, diagnostics) {
+  const result = { allowed: false, code, reason };
+  if (unsafeReason) result.unsafeReason = unsafeReason;
+  if (diagnostics) result.diagnostics = diagnostics;
+  return result;
 }
 function variableLengthObstacle(span, current) {
   for (let index = 1; index < span.length; index += 1) {
@@ -16471,6 +16474,27 @@ function planTextArrayRewrite(editor, pieces, glyphs, fallback) {
       );
     }
     const replacementWidth = glyphs.reduce((sum, glyph) => sum + glyphSpaceWidth(fallback, glyph.advanceWidth), 0);
+    let followingAdjustment = 0;
+    if (suffix === "") {
+      const nextRun = stream.runs[Number(lastEntry.runId.split(":")[1]) + 1];
+      if (!nextRun) {
+        return refusal(
+          "FALLBACK_LAYOUT_UNSUPPORTED",
+          "Text is drawn after this match, but this document does not state exactly how far away it starts, so whether the replacement would be drawn over it cannot be established. Nothing is estimated, so this replacement is refused.",
+          "fallback-replacement-slot-unknown"
+        );
+      }
+      followingAdjustment = nextRun.displacement;
+    }
+    const availableAdvance = width - between - followingAdjustment;
+    if (replacementWidth > availableAdvance) {
+      return refusal(
+        "FALLBACK_LAYOUT_UNSUPPORTED",
+        `This replacement would be ${replacementWidth} glyph-space units wide in the fallback font, but only ${availableAdvance} units are available before text that must keep its position -- so the replacement's own glyphs would be drawn over that text. Nothing is moved, shrunk, or reflowed to make room; a shorter replacement is written normally.`,
+        "fallback-replacement-overflows-slot",
+        { replacementAdvance: replacementWidth, availableAdvance }
+      );
+    }
     const value = replacementWidth - width + between;
     const formatted = formatAdjustment(value);
     if (formatted === null || replacementWidth - Number(formatted) !== width - between) {
@@ -16770,6 +16794,7 @@ function planError(plan) {
   error.code = plan.code;
   if (plan.unsafeReason) error.unsafeReason = plan.unsafeReason;
   if (plan.characters?.length) error.characters = plan.characters;
+  if (plan.diagnostics) error.diagnostics = plan.diagnostics;
   if (plan.cause) error.cause = plan.cause;
   return error;
 }
@@ -17036,6 +17061,7 @@ var PdfTextEditor = class {
       const result = { allowed: false, mode: null, code: plan.code, reason: plan.reason };
       if (plan.unsafeReason) result.unsafeReason = plan.unsafeReason;
       if (plan.characters?.length) result.characters = plan.characters;
+      if (plan.diagnostics) result.diagnostics = plan.diagnostics;
       return result;
     }
     return { allowed: true, mode: plan.mode };
@@ -17151,7 +17177,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.4.3";
+var ENGINE_VERSION = "0.4.4";
 export {
   ENGINE_VERSION,
   PdfTextEditor

@@ -5,10 +5,15 @@
 | ファイル | 内容 |
 |---|---|
 | `idontlovepdf-engine.js` | PDF処理エンジンの正式Release bundle |
-| `fonts/BIZUDGothic-Regular.ttf` | PDF編集時のfallback font（編集用フォント） |
+| `fonts/BIZUDGothic-Regular.ttf` | PDF編集時のfallback font（編集用フォント、ゴシック系） |
 | `fonts/OFL.txt` | 上記フォントのライセンス文書（SIL Open Font License 1.1） |
+| `fonts/BIZUDMincho-Regular.ttf` | PDF編集時のfallback font（編集用フォント、明朝系） |
+| `fonts/OFL-BIZUDMincho.txt` | 上記フォントのライセンス文書（SIL Open Font License 1.1） |
+| `manifest.json` | 上記の同梱version・SHA-256をまとめたmachine-readable manifest（CI/保守用。本体runtimeはこのファイルを取得・参照しない） |
 
 いずれも**リポジトリへ同梱**する。実行時にGitHub ReleaseやGoogle Fonts等から取得することはしない。
+
+`manifest.json` は本READMEの表と内容が一致している必要がある。engine・フォントを更新するときは、両方を同時に更新する。CI（`.github/workflows/ci.yml` の `scripts/ci/check-vendor-integrity.mjs`）は `manifest.json` の値と実ファイルのSHA-256・サイズが一致することを機械的に確認する。
 
 ## 1. idontlovepdf-engine
 
@@ -17,18 +22,20 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.4.4 |
+| version | v0.5.0 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4` |
-| asset size | 533,195 bytes |
+| SHA-256 | `58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895` |
+| asset size | 541,649 bytes |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
 | 取得日 | 2026-09-04 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.4>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.5.0>
 
-取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4`）。編集用フォントは変更していない。
+取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895`）。取り込んだのはRelease assetの `idontlovepdf-engine.js` 1ファイルのみであり、`idontlovepdf-engine` の `src/` はコピーしていない。bundleは手修正していない。
+
+このRelease（v0.5.0）は、PR #30で実装した「PDF自身の`FontDescriptor`/`Flags`によるSerif/Sans判定と、`setFallbackFonts({ sans, serif })` によるfallback font自動選択」を、`idontlovepdf-engine` 側のRelease workflow（`main`をcheckoutし、test/buildを経てtag・Releaseを作成）で正式にReleaseしたものである。engine側のREADMEはこの機能を「PoC」と位置づけているが、これはfont自動選択の対応範囲（Serif/Sansの2系統のみで、太字・斜体・weight・stretch等には未対応）を指すものであり、Release自体が非公式・未完成であることを意味しない。Release自体は非draft・非prereleaseの正式なGitHub Releaseであり、`ENGINE_VERSION === "0.5.0"`、`setFallbackFonts()` のexportを確認したうえで取り込んでいる。
 
 ### 取り扱いの原則
 
@@ -39,13 +46,22 @@
   - `PdfTextEditor`
     - `listTextRuns(password?)`（読み込み確認・本文件数の概況表示に使う）
     - `searchText(query, password?)`（本文検索。検索・置換対象の判断はこれに一本化する）
-    - `setFallbackFont(fontBytes)`（元PDFのフォントで書けない文字用のフォントを渡す）
+    - `setFallbackFont(fontBytes)`（元PDFのフォントで書けない文字用のフォントを1つだけ渡す。v0.5.0時点では本体側は使用していない）
+    - `setFallbackFonts({ sans?, serif? })`（v0.5.0〜。fallback fontをSerif/Sans用に2つ渡す。本体側はこちらを使う。元PDFのSerif/Sans判定・どちらを使うかの選択はengine側の責務であり、本体側では判断しない）
     - `checkTextMatchReplacement(matchId, replacement)`（置換可否の事前確認。何も変更しない）
     - `replaceTextMatch(matchId, replacement)`（検索結果1件の置換）
     - `save()`
   - `ENGINE_VERSION`
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
+
+### v0.5.0 の要点（本体側の設計に関わるもの）
+
+- **fallback fontが1種類から2種類（BIZ UDゴシック・BIZ UD明朝）になった。** 元PDFのFontDescriptor `/Flags`（Serifビット）による判定で、Serif系と判定されたPDFへの置換にはBIZ UD明朝、Sans系・判定不能なPDFへの置換には従来どおりBIZ UDゴシックが使われる。**この判定は完全にengine内部で完結する。** 本体側は`/FontDescriptor`・`/Flags`・font名・resource名のいずれも読まず、`setFallbackFonts({ sans, serif })` で2つのフォントのバイト列を渡すだけである。
+- **本体側は `setFallbackFont()` から `setFallbackFonts({ sans, serif })` へ移行した。** 両APIは共存でき、`setFallbackFont(bytes)` は `setFallbackFonts({ sans: bytes })` と同じ扱い（常にsans/Gothic側として登録される）だが、本体側は新APIだけを使う。
+- 1つのPDF内で、Serif向け置換とSans向け置換が両方発生した場合でも、それぞれ対応するfallback fontが個別に埋め込まれ、以降の置換・save→reopenでも再利用される（同じフォントが何度も埋め込まれることはない）。
+- **v0.4.4までの置換安全性判定（glyph幅の実測、TJ adjustment、availableAdvance・replacementAdvanceの比較、overflow判定、word/character spacing、writing mode、multi-run安全性）はfont選択の変更によって変わっていない。** 判定はfallback fontとして実際に選ばれた側（Mincho or Gothic）の実glyph幅を使って行われるが、判定のロジック自体・本体側から見えるAPI（`mode`・`code`・`unsafeReason`・`diagnostics`の形）は変わっていない。本体側でこれらの判定を再実装・移植してはいない。
+- **本体側から見える公開APIの追加は `setFallbackFonts()` だけである。** 新しいerror codeは追加されていない（`FALLBACK_FONT_INVALID` 等の既存codeが、2つのフォントのそれぞれに対して同様に使われる）。
 
 ### v0.4.4 の要点（本体側の設計に関わるもの）
 
@@ -127,15 +143,15 @@ engineを新しいversionへ上げるときは、次の順で行う。
    ```
 
 4. 一致していれば `vendor/idontlovepdf-engine.js` を差し替える（一致しない場合はコミットしない）
-5. このファイルの表（version、SHA-256、asset size、取得日）を更新する
+5. このファイルの表（version、SHA-256、asset size、取得日）と `vendor/manifest.json` の `engine` を更新する（両者が食い違わないようにする）
 6. 静的HTTPサーバー経由でツールを開き、`ENGINE_VERSION` の表示が新しいversionになっていることを確認する
 7. 通常PDF・日本語PDF・暗号化PDFで、実ブラウザ回帰確認を行う（`README.md` の「動作確認」を参照）
 
-engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は手動更新とする。
+engine Releaseへ自動追従するGitHub Actionsは導入しない（新versionへの更新自体は当面手動）。ただし `.github/workflows/ci.yml` が、PRごとに `vendor/idontlovepdf-engine.js` と `vendor/manifest.json` のSHA-256が一致していること、bundleが実際にES Moduleとして読み込めること、`ENGINE_VERSION` が manifest の記載と一致することを機械的に確認する（`scripts/ci/check-vendor-integrity.mjs`）。
 
-## 2. BIZ UDGothic（編集用フォント）
+## 2. BIZ UDGothic（編集用フォント・ゴシック系）
 
-元のPDFに埋め込まれたフォントは、その文書で使った文字だけを含むサブセットであることが多い。そのため「元のPDFに無い文字」へ置き換えようとすると、元のフォントでは書けない。engine v0.4.2 はこの場合に、呼び出し側が渡したフォントで置換後の文字を書く。本ツールがそのフォントとして同梱しているのが BIZ UDGothic である。
+元のPDFに埋め込まれたフォントは、その文書で使った文字だけを含むサブセットであることが多い。そのため「元のPDFに無い文字」へ置き換えようとすると、元のフォントでは書けない。engine v0.4.2 はこの場合に、呼び出し側が渡したフォントで置換後の文字を書く。v0.5.0からは、元PDFがSans系・判定不能と判定された場合に使われる（Serif系と判定された場合は次項のBIZ UD明朝が使われる）。
 
 | 項目 | 値 |
 |---|---|
@@ -145,29 +161,51 @@ engine Releaseへ自動追従するGitHub Actionsは導入しない。当面は�
 | 配布元 | <https://github.com/googlefonts/morisawa-biz-ud-gothic>（tag `v1.05` の `fonts/ttf/BIZUDGothic-Regular.ttf`） |
 | license | SIL Open Font License 1.1（`fonts/OFL.txt` に全文を同梱） |
 | SHA-256 | `709fcd41e3209fb765da750472f55ccdf925653e9fa7e1eb007cb65c8f749c75` |
-| 用途 | 本ツールでPDFを編集するときの fallback font（元PDFのフォントに無い文字を書くため） |
+| 用途 | 本ツールでPDFを編集するときの fallback font（Sans系・判定不能な元PDFへの、元PDFのフォントに無い文字の置換） |
 | 取得日 | 2026-09-02 |
 
 - engine v0.4.2 の開発・テストで使われているものと同じフォント・同じversionである。**別のversionや別のフォントへ勝手に置き換えない。**
 - 利用者が選ぶ設定ではない。フォント選択UIは設けない。
 - 実行時にGoogle FontsやGitHubから取得しない。同一originのローカルファイルとして読み込む。
-- 置換の結果、このフォントが実際に使われた場合だけ、保存するPDFへ埋め込まれる（約3MB増える）。元のフォントで書けた場合は埋め込まれない。
+- 置換の結果、このフォントが実際に使われた場合だけ、保存するPDFへ埋め込まれる（約3MB増える）。元のフォントで書けた場合や、後述のBIZ UD明朝が選ばれた場合は埋め込まれない。
 
-### フォントの更新手順
+## 3. BIZ UDMincho（編集用フォント・明朝系）
 
-1. 配布元の該当tagから `fonts/ttf/BIZUDGothic-Regular.ttf` を取得する
-2. SHA-256が上表と一致することを確認する（versionを上げる場合は、新しい値へ表を更新する）
+v0.5.0から追加。engineが元PDFのFontDescriptor `/Flags`（Serifビット）からSerif系と判定した場合、上記BIZ UDGothicの代わりにこちらが使われる。
+
+| 項目 | 値 |
+|---|---|
+| フォント名 | BIZ UDMincho Regular |
+| version | 1.06 |
+| ファイル | `fonts/BIZUDMincho-Regular.ttf` |
+| 配布元 | <https://github.com/googlefonts/morisawa-biz-ud-mincho>（tag `v1.06` の `fonts/ttf/BIZUDMincho-Regular.ttf`） |
+| license | SIL Open Font License 1.1（`fonts/OFL-BIZUDMincho.txt` に全文を同梱） |
+| SHA-256 | `468ee6d9b149ca144809e03841bf18740ecf014e055a00da6ecaf1aaf4165af2` |
+| 用途 | 本ツールでPDFを編集するときの fallback font（Serif系と判定された元PDFへの、元PDFのフォントに無い文字の置換） |
+| 取得日 | 2026-09-04 |
+
+- `idontlovepdf-engine` v0.5.0 のPoC実装・テストで使われているものと同じフォント・同じversionである。**別のversionや別のフォントへ勝手に置き換えない。**
+- BIZ UDGothicと同様、利用者が選ぶ設定ではなく、実行時に外部から取得しない。
+- 置換の結果、このフォントが実際に選ばれ・使われた場合だけ、保存するPDFへ埋め込まれる（約6MB増える）。BIZ UDGothicとBIZ UD明朝が両方使われた文書では、両方が埋め込まれる。
+
+### フォントの更新手順（BIZ UDGothic・BIZ UDMincho共通）
+
+1. 配布元の該当tagから `fonts/ttf/BIZUDGothic-Regular.ttf`（または `BIZUDMincho-Regular.ttf`）を取得する
+2. SHA-256が上表と一致することを確認する（versionを上げる場合は、新しい値へ表と `vendor/manifest.json` を更新する）
 
    ```bash
    sha256sum vendor/fonts/BIZUDGothic-Regular.ttf
+   sha256sum vendor/fonts/BIZUDMincho-Regular.ttf
    ```
 
-3. 同じtagの `OFL.txt` も一緒に更新する
-4. engine側の開発・テストで使われているversionと食い違わないか確認する
-5. 実ブラウザで、元PDFのフォントに無い文字への置換を回帰確認する
+3. 同じtagの `OFL.txt`（Gothic）・`OFL-BIZUDMincho.txt`（Mincho）も一緒に更新する
+4. `idontlovepdf-engine` 側の開発・テストで使われているversionと食い違わないか確認する
+5. 実ブラウザで、Serif系・Sans系それぞれの元PDFに対する、元PDFのフォントに無い文字への置換を回帰確認する
 
 ### 配信時の注意（IIS等）
 
 `.ttf` を配信できないサーバー設定では、編集用フォントを読み込めず、ツールはエラーを表示してPDFの受け付けを止める（黙って機能を落とさない）。IISの既定では `.ttf` は配信できるが、MIME typeを絞った構成の場合は `.ttf` → `font/ttf` の設定を確認する。
 
-なお、要求が404になる場合は起動時に、`.ttf` の要求へHTML（エラーページ等）が200で返る場合は最初のPDFを開いた時点（engineの `setFallbackFont()`）で検出される。いずれも同じ案内を表示する。
+**BIZ UDGothic・BIZ UDMinchoのどちらか一方だけが取得・検証に失敗した場合も、もう一方だけの1font構成へ黙って縮退させない。** 両方読み込めた場合だけ編集画面を開く（`js/app.js` の `loadFallbackFonts()` を参照）。
+
+なお、要求が404になる場合は起動時に、`.ttf` の要求へHTML（エラーページ等）が200で返る場合は最初のPDFを開いた時点（engineの `setFallbackFonts()`）で検出される。いずれも同じ案内を表示する。

@@ -13701,7 +13701,9 @@ function identityEncode(glyphs) {
   });
   return bytes;
 }
-async function buildFallbackFontObjects(fallback, numbers, glyphs, { programAlreadyEmbedded = false } = {}) {
+var FALLBACK_FLAGS_SYMBOLIC = 4;
+var FALLBACK_FLAGS_SERIF = 2;
+async function buildFallbackFontObjects(fallback, numbers, glyphs, { programAlreadyEmbedded = false, serif = false } = {}) {
   const { font } = fallback;
   const scale = (value) => Math.round(value * PDF_UNITS_PER_EM / fallback.unitsPerEm);
   const head2 = font.tables.head ?? {};
@@ -13747,7 +13749,7 @@ end`;
     }],
     descendant,
     [numbers.descriptor, {
-      dictionary: `<< /Type /FontDescriptor /FontName /${name} /Flags 4 /FontBBox [${scale(head2.xMin ?? 0)} ${scale(head2.yMin ?? 0)} ${scale(head2.xMax ?? 0)} ${scale(head2.yMax ?? 0)}] /ItalicAngle 0 /Ascent ${scale(font.ascender)} /Descent ${scale(font.descender)} /CapHeight ${scale(os22.sCapHeight ?? font.ascender)} /StemV 80 /FontFile2 ${numbers.fontFile} 0 R >>`
+      dictionary: `<< /Type /FontDescriptor /FontName /${name} /Flags ${FALLBACK_FLAGS_SYMBOLIC | (serif ? FALLBACK_FLAGS_SERIF : 0)} /FontBBox [${scale(head2.xMin ?? 0)} ${scale(head2.yMin ?? 0)} ${scale(head2.xMax ?? 0)} ${scale(head2.yMax ?? 0)}] /ItalicAngle 0 /Ascent ${scale(font.ascender)} /Descent ${scale(font.descender)} /CapHeight ${scale(os22.sCapHeight ?? font.ascender)} /StemV 80 /FontFile2 ${numbers.fontFile} 0 R >>`
     }],
     [numbers.fontFile, {
       dictionary: `<< /Length ${fontData.length} /Length1 ${fallback.bytes.length} /Filter /FlateDecode >>`,
@@ -13766,8 +13768,9 @@ function glyphsFromToUnicode(fallback, mappings) {
   }
   return glyphs;
 }
-function freeResourceName(fontDictionary) {
+function freeResourceName(fontDictionary, reserved = []) {
   const taken = new Set([...fontDictionary.matchAll(/\/([^\s/<>{}[\]()]+)/g)].map((match) => match[1]));
+  for (const name of reserved) taken.add(name);
   for (let suffix = 0; ; suffix += 1) {
     const name = suffix ? `ILPFallback${suffix}` : "ILPFallback";
     if (!taken.has(name)) return name;
@@ -14701,6 +14704,35 @@ function measureCodes(metrics, bytes) {
     if (metrics.codeBytes === 1 && code === 32) spaces += 1;
   }
   return { width, glyphs, spaces };
+}
+
+// src/font-classification.js
+var FLAG_SERIF = 2;
+async function tryResolve2(resolve, target) {
+  try {
+    return await resolve(target);
+  } catch {
+    return null;
+  }
+}
+async function fontDescriptorOf(fontDictionary, resolve) {
+  let holder = fontDictionary;
+  if (/\/Subtype\s*\/Type0\b/.test(fontDictionary)) {
+    const descendant = await resolveDescendantFont(fontDictionary, resolve);
+    holder = descendant.dictionary ?? null;
+  }
+  if (!holder) return null;
+  const indirect = reference(holder, "FontDescriptor");
+  if (!indirect) return null;
+  const object = await tryResolve2(resolve, indirect);
+  return object?.dictionary ?? null;
+}
+async function classifyFontResource(fontDictionary, resolve) {
+  const descriptor = await fontDescriptorOf(fontDictionary, resolve);
+  if (!descriptor) return "unknown";
+  const flags = await resolvedNumber(descriptor, "Flags", resolve, { unresolved: "flags-unresolved", invalid: "flags-invalid" });
+  if (flags.reason || flags.value === null || flags.value === 0 || !Number.isInteger(flags.value)) return "unknown";
+  return (flags.value & FLAG_SERIF) !== 0 ? "serif" : "sans";
 }
 
 // src/cmap.js
@@ -16253,12 +16285,14 @@ function scannedRuns(editor, span) {
     return { stream, run: stream?.runs[runIndex], entry };
   });
 }
-async function registerFallbackResource(editor, embedded, resources) {
+async function registerFallbackResource(editor, digest2, type0Number, pageResources, resources) {
   if (resources?.number === void 0) {
     return refusal("FALLBACK_LAYOUT_UNSUPPORTED", "This page's /Resources are not an addressable object, so the fallback font cannot be added to them");
   }
-  const existing = embedded.resources.get(resources.number);
+  let names = pageResources.get(resources.number);
+  const existing = names?.get(digest2);
   if (existing) return { name: existing };
+  const reserved = names ? [...names.values()] : [];
   const indirect = reference(resources.dictionary, "Font");
   let holder = resources;
   if (indirect) {
@@ -16268,20 +16302,26 @@ async function registerFallbackResource(editor, embedded, resources) {
       return refusal("FALLBACK_LAYOUT_UNSUPPORTED", `This page's /Font resources could not be read in order to add the fallback font to them: ${error.message}`);
     }
   }
-  const inline = indirect ? null : resources.dictionary.match(/\/Font\s*<<([\s\S]*?)>>/);
+  const pending = editor.pendingObjects.get(holder.number);
+  if (pending?.dictionary) holder = { ...holder, dictionary: pending.dictionary };
+  const inline = indirect ? null : holder.dictionary.match(/\/Font\s*<<([\s\S]*?)>>/);
   let name;
   let dictionary;
   if (indirect) {
-    name = freeResourceName(holder.dictionary);
-    dictionary = holder.dictionary.replace(/>>\s*$/, `/${name} ${embedded.numbers.type0} 0 R >>`);
+    name = freeResourceName(holder.dictionary, reserved);
+    dictionary = holder.dictionary.replace(/>>\s*$/, `/${name} ${type0Number} 0 R >>`);
   } else if (inline) {
-    name = freeResourceName(inline[1]);
-    dictionary = resources.dictionary.replace(inline[0], `/Font << ${inline[1].trim()} /${name} ${embedded.numbers.type0} 0 R >>`);
+    name = freeResourceName(inline[1], reserved);
+    dictionary = holder.dictionary.replace(inline[0], `/Font << ${inline[1].trim()} /${name} ${type0Number} 0 R >>`);
   } else {
-    name = "ILPFallback";
-    dictionary = resources.dictionary.replace(/>>\s*$/, `/Font << /${name} ${embedded.numbers.type0} 0 R >> >>`);
+    name = freeResourceName("", reserved);
+    dictionary = holder.dictionary.replace(/>>\s*$/, `/Font << /${name} ${type0Number} 0 R >> >>`);
   }
-  embedded.resources.set(resources.number, name);
+  if (!names) {
+    names = /* @__PURE__ */ new Map();
+    pageResources.set(resources.number, names);
+  }
+  names.set(digest2, name);
   return { name, object: { number: holder.number, generation: holder.generation, dictionary } };
 }
 async function adoptExistingFallbackFont(editor, fallback) {
@@ -16549,10 +16589,18 @@ function buildTextArrayEdit(editor, pieces, array, glyphs, resourceName, replace
     runTexts
   };
 }
+function selectFallbackFont(editor, classification) {
+  if (classification === "serif" && editor.fallbackFonts.has("serif")) {
+    return { role: "serif", fallback: editor.fallbackFonts.get("serif") };
+  }
+  return { role: "sans", fallback: editor.fallbackFonts.get("sans") };
+}
 async function planFallbackReplacement(editor, match, replacement) {
-  const fallback = editor.fallbackFont;
   const pieces = scannedRuns(editor, match.span);
   if (pieces.some(({ run }) => !run)) return refusal("MATCH_STALE", "This match no longer describes the document");
+  const classification = pieces[0].stream.fontClassifications?.get(pieces[0].run.fontName) ?? "unknown";
+  const selected = selectFallbackFont(editor, classification);
+  const { role, fallback } = selected;
   const operators = new Set(pieces.map(({ run }) => run.operator));
   const drawnByArray = operators.size === 1 && operators.has("TJ");
   if (!drawnByArray && !(operators.size === 1 && operators.has("Tj"))) {
@@ -16605,20 +16653,26 @@ async function planFallbackReplacement(editor, match, replacement) {
       `Text is drawn from where this match ends (${last.followedBy}), and the fallback font's characters are not the widths the document's own font used, so that text would move. Only a match followed by ET or an explicit Td/TD/Tm/T* is redrawn in another font.`
     );
   }
-  const base = editor.fallbackEmbedding ?? await adoptExistingFallbackFont(editor, fallback);
+  const base = editor.fallbackEmbeddings.get(role) ?? await adoptExistingFallbackFont(editor, fallback);
   const start = Math.max(editor.document.size, ...[...editor.pendingObjects.keys()].map((number) => number + 1));
   const embedded = {
     numbers: base?.numbers ?? { type0: start, cidFont: start + 1, descriptor: start + 2, fontFile: start + 3, toUnicode: start + 4 },
-    resources: new Map(base?.resources),
     glyphs: new Map(base?.glyphs),
     // True once the font program is in the file, whether this session put it there or an
     // earlier one did: from then on only the widths and the ToUnicode CMap are rewritten.
     programAlreadyEmbedded: Boolean(base)
   };
+  const pageResources = new Map([...editor.fallbackPageResources].map(([number, names]) => [number, new Map(names)]));
+  if (base?.resources) {
+    for (const [pageNumber, name] of base.resources) {
+      if (!pageResources.has(pageNumber)) pageResources.set(pageNumber, /* @__PURE__ */ new Map());
+      if (!pageResources.get(pageNumber).has(fallback.digest)) pageResources.get(pageNumber).set(fallback.digest, name);
+    }
+  }
   const objects = /* @__PURE__ */ new Map();
   const resourceNames = /* @__PURE__ */ new Map();
   for (const { stream } of pieces) {
-    const registered = await registerFallbackResource(editor, embedded, stream.resources);
+    const registered = await registerFallbackResource(editor, fallback.digest, embedded.numbers.type0, pageResources, stream.resources);
     if (registered.allowed === false) return registered;
     resourceNames.set(stream.object.number, registered.name);
     if (registered.object) objects.set(registered.object.number, registered.object);
@@ -16657,10 +16711,15 @@ async function planFallbackReplacement(editor, match, replacement) {
     return { ...refusal("FONT_ENCODING_UNSUPPORTED", error.message), cause: error };
   }
   const mode = match.span.length > 1 ? REPLACEMENT_MODE.fallbackFontMultiRun : pieces[0].entry.charStart === 0 && pieces[0].entry.charEnd === [...pieces[0].entry.runText].length ? REPLACEMENT_MODE.fallbackFont : REPLACEMENT_MODE.fallbackFontPartial;
-  for (const [number, object] of await buildFallbackFontObjects(fallback, embedded.numbers, embedded.glyphs, { programAlreadyEmbedded: embedded.programAlreadyEmbedded })) {
+  for (const [number, object] of await buildFallbackFontObjects(fallback, embedded.numbers, embedded.glyphs, { programAlreadyEmbedded: embedded.programAlreadyEmbedded, serif: role === "serif" })) {
     objects.set(number, object);
   }
-  return { allowed: true, mode, updates: [], fallback: { embedding: embedded, objects, edits } };
+  return {
+    allowed: true,
+    mode,
+    updates: [],
+    fallback: { role, classification, sourceFontName: pieces[0].run.fontName, embedding: embedded, pageResources, objects, edits }
+  };
 }
 async function planTextMatchReplacement(editor, matchId, replacement) {
   if (editor.security && editor.security.modifyAllowed === false) {
@@ -16733,7 +16792,7 @@ async function planTextMatchReplacement(editor, matchId, replacement) {
     });
   } catch (error) {
     const characters = charactersOutsideFont(editor, match.span[0], replacement);
-    if (!editor.fallbackFont) {
+    if (!editor.fallbackFonts.size) {
       return { ...refusal("FONT_ENCODING_UNSUPPORTED", error.message), characters, cause: error };
     }
     const viaFallback = await planFallbackReplacement(editor, match, replacement);
@@ -16757,7 +16816,8 @@ function commitPlan(editor, plan) {
     rebuilt.set(objectNumber, rebuildContentStream(editor, objectNumber, edits.get(objectNumber)));
   }
   for (const { id, bytes } of plan.updates) editor.pending.set(id, bytes);
-  editor.fallbackEmbedding = plan.fallback.embedding;
+  editor.fallbackEmbeddings.set(plan.fallback.role, plan.fallback.embedding);
+  editor.fallbackPageResources = plan.fallback.pageResources;
   for (const [number, object] of plan.fallback.objects) editor.pendingObjects.set(number, object);
   editor.fallbackEdits = edits;
   for (const [objectNumber, bytes] of rebuilt) editor.pendingStreams.set(objectNumber, bytes);
@@ -16852,10 +16912,13 @@ async function loadFontMaps(resources, structure, security) {
   const modes = /* @__PURE__ */ new Map();
   const widths = /* @__PURE__ */ new Map();
   const widthReasons = /* @__PURE__ */ new Map();
+  const classifications = /* @__PURE__ */ new Map();
   for (const [name, fontReference] of await fontReferences(resources, structure, security)) {
     const font = await structure.resolveObject(fontReference, security, decryptStreamBytes);
+    const resolve = (target) => structure.resolveObject(target, security, decryptStreamBytes);
     modes.set(name, writingModeOf(font.dictionary, structure));
-    const { metrics, reason } = await describeFontWidths(font.dictionary, (target) => structure.resolveObject(target, security, decryptStreamBytes));
+    classifications.set(name, await classifyFontResource(font.dictionary, resolve));
+    const { metrics, reason } = await describeFontWidths(font.dictionary, resolve);
     if (metrics) widths.set(name, metrics);
     else widthReasons.set(name, reason);
     const toUnicode = reference(font.dictionary, "ToUnicode");
@@ -16863,7 +16926,37 @@ async function loadFontMaps(resources, structure, security) {
     const cmapObject = structure.object(toUnicode);
     result.set(name, parseToUnicodeCMap(await decodeStream(cmapObject, "ToUnicode stream", security)));
   }
-  return { maps: result, modes, widths, widthReasons };
+  return { maps: result, modes, widths, widthReasons, classifications };
+}
+function ensureFallbackRoleAvailable(editor, role) {
+  if (editor.fallbackEmbeddings.has(role)) {
+    throw searchError(
+      "FALLBACK_FONT_ALREADY_IN_USE",
+      `This editor has already written text with the "${role}" fallback font; that text holds glyph ids of that font, so it cannot be exchanged for another. Save and reopen to start again with a different font.`
+    );
+  }
+}
+async function parseFallbackFontForRole(fontBytes) {
+  const fallback = parseFallbackFont(fontBytes);
+  fallback.digest = await fingerprintFont(fallback.bytes);
+  return fallback;
+}
+function assertFallbackDigestsDistinct(editor, entries) {
+  const digestOf = (role) => entries.find((entry) => entry[0] === role)?.[1]?.digest ?? editor.fallbackFonts.get(role)?.digest;
+  const sans = digestOf("sans");
+  const serif = digestOf("serif");
+  if (sans && serif && sans === serif) {
+    throw searchError(
+      "FALLBACK_FONT_INVALID",
+      `The "sans" and "serif" fallback fonts are byte-for-byte the same program; each role must be a distinct font. Two roles sharing one font program would collide in this document's fallback page/resource bookkeeping (see registerFallbackResource() in src/pdf-document.js) -- pass two different font programs, or setFallbackFont() alone if one font is really all that is needed.`
+    );
+  }
+}
+async function setFallbackFontForRole(editor, role, fontBytes) {
+  ensureFallbackRoleAvailable(editor, role);
+  const fallback = await parseFallbackFontForRole(fontBytes);
+  assertFallbackDigestsDistinct(editor, [[role, fallback]]);
+  editor.fallbackFonts.set(role, fallback);
 }
 var PdfTextEditor = class {
   constructor(input) {
@@ -16874,8 +16967,9 @@ var PdfTextEditor = class {
     this.pending = /* @__PURE__ */ new Map();
     this.pendingObjects = /* @__PURE__ */ new Map();
     this.pendingStreams = /* @__PURE__ */ new Map();
-    this.fallbackFont = null;
-    this.fallbackEmbedding = null;
+    this.fallbackFonts = /* @__PURE__ */ new Map();
+    this.fallbackEmbeddings = /* @__PURE__ */ new Map();
+    this.fallbackPageResources = /* @__PURE__ */ new Map();
     this.fallbackEdits = /* @__PURE__ */ new Map();
     this.fallbackRunTexts = /* @__PURE__ */ new Map();
     this.matches = /* @__PURE__ */ new Map();
@@ -16914,7 +17008,17 @@ var PdfTextEditor = class {
         const runs = scanTextRuns(decoded, `content stream object ${object.number}`);
         if (runs.length) {
           const fonts = await loadFontMaps(resources, this.document, this.security);
-          this.streams.push({ object, decoded, runs, resources, fontMaps: fonts.maps, fontModes: fonts.modes, fontWidths: fonts.widths, fontWidthReasons: fonts.widthReasons });
+          this.streams.push({
+            object,
+            decoded,
+            runs,
+            resources,
+            fontMaps: fonts.maps,
+            fontModes: fonts.modes,
+            fontWidths: fonts.widths,
+            fontWidthReasons: fonts.widthReasons,
+            fontClassifications: fonts.classifications
+          });
         }
       }
     }
@@ -17027,14 +17131,69 @@ var PdfTextEditor = class {
    * another font's ids mean different glyphs, so swapping it would silently turn text
    * already written into the wrong characters. Setting a different font before the first
    * replacement is fine.
+   *
+   * This is sugar for `setFallbackFonts({ sans: fontBytes })`: it always registers the
+   * "sans" role, which is what every fallback replacement uses when this is the only
+   * fallback font call an editor ever makes -- so a caller that has not adopted
+   * setFallbackFonts() sees exactly the v0.4.4 behaviour, regardless of the source text's
+   * own font. See setFallbackFonts() for choosing a different font for serif source text.
    */
   async setFallbackFont(fontBytes) {
-    if (this.fallbackEmbedding) {
-      throw searchError("FALLBACK_FONT_ALREADY_IN_USE", "This editor has already written text with a fallback font; that text holds glyph ids of that font, so it cannot be exchanged for another. Save and reopen to start again with a different font.");
+    await setFallbackFontForRole(this, "sans", fontBytes);
+    return this;
+  }
+  /**
+   * Supplies more than one fallback font, so that text drawn in a serif source font can be
+   * redrawn in a serif-looking fallback and text drawn in a sans-serif source font in a
+   * sans-serif-looking one -- reducing how visually different a replacement looks from the
+   * document's own type, which setFallbackFont()'s single font cannot do for both at once.
+   *
+   * `fonts` is `{ sans?, serif? }`. Which role a given match actually uses is never up to
+   * the caller: it is decided per match, from the source run's own font, by
+   * planFallbackReplacement() in pdf-document.js (see font-classification.js for how a font
+   * is read as "serif", "sans", or "unknown"). A "serif" source font uses the "serif"
+   * fallback only when one has been supplied; "sans", "unknown", and "serif" with no serif
+   * fallback registered all use "sans" -- exactly the font setFallbackFont() alone would
+   * have used for everything, so a document this cannot confidently classify never behaves
+   * worse than v0.4.4 did.
+   *
+   * **"sans" must be registered before "serif" can be used** -- either in this same call, or
+   * by an earlier one (including a prior setFallbackFont(), which registers "sans"). Without
+   * it, "serif" would have no font to fall back to for the "sans"/"unknown" text it is not
+   * meant to draw, and would end up drawing everything in the serif font instead -- silently
+   * contradicting the fallback this whole design exists to preserve. Rejected up front with
+   * `code: "FALLBACK_FONT_INVALID"` rather than left to draw the wrong font later.
+   *
+   * Both fonts may be embedded in the same document, each once however many replacements
+   * use it, and a page needing both gets both without either colliding on resource name.
+   *
+   * Each role may be set again with a different font as long as that role has not yet been
+   * used to write a replacement (`code: "FALLBACK_FONT_ALREADY_IN_USE"` otherwise, naming
+   * the role) -- the same rule setFallbackFont() has always applied to its one font, applied
+   * per role now that there can be more than one.
+   */
+  async setFallbackFonts(fonts) {
+    if (!fonts || typeof fonts !== "object") {
+      throw searchError("FALLBACK_FONT_INVALID", "setFallbackFonts() takes an object of { sans?, serif? } font bytes");
     }
-    const fallback = parseFallbackFont(fontBytes);
-    fallback.digest = await fingerprintFont(fallback.bytes);
-    this.fallbackFont = fallback;
+    const entries = Object.entries(fonts).filter(([, bytes]) => bytes !== void 0);
+    const badRole = entries.find(([role]) => role !== "sans" && role !== "serif");
+    if (badRole) {
+      throw searchError("FALLBACK_FONT_INVALID", `setFallbackFonts() only accepts "sans" and "serif" roles, not "${badRole[0]}"`);
+    }
+    if (!entries.length) throw searchError("FALLBACK_FONT_INVALID", "setFallbackFonts() requires at least one of { sans, serif }");
+    const registersSans = entries.some(([role]) => role === "sans");
+    if (!registersSans && !this.fallbackFonts.has("sans")) {
+      throw searchError(
+        "FALLBACK_FONT_INVALID",
+        'setFallbackFonts() requires a "sans" font to be registered (in this call or an earlier one) before "serif" can be used: "sans"/"unknown" source text always falls back to "sans", so a document with no "sans" font would have nothing to fall back to.'
+      );
+    }
+    for (const [role] of entries) ensureFallbackRoleAvailable(this, role);
+    const parsed = [];
+    for (const [role, bytes] of entries) parsed.push([role, await parseFallbackFontForRole(bytes)]);
+    assertFallbackDigestsDistinct(this, parsed);
+    for (const [role, fallback] of parsed) this.fallbackFonts.set(role, fallback);
     return this;
   }
   /**
@@ -17177,7 +17336,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.4.4";
+var ENGINE_VERSION = "0.5.0";
 export {
   ENGINE_VERSION,
   PdfTextEditor

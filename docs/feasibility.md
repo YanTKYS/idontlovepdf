@@ -7,8 +7,8 @@
 - 現在の第一候補: `idontlovepdf-engine`（自作PDF処理エンジン）
 - 商用Web PDF SDK: 自作engineが要求水準へ届かなかった場合の代替候補
 - 運用可否: 未判定（一般職員による安定運用は未検証）
-- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.4.3） / 公開PDF `22550.pdf` で本体UIからの成立を確認 / 本番実装未着手
-- 最終更新: 2026-09-03
+- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.4.4） / 公開PDF `22550.pdf` で本体UIからの成立と事前拒否の両方を確認 / 本番実装未着手
+- 最終更新: 2026-09-04
 
 ---
 
@@ -1018,6 +1018,66 @@ engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、neste
 
 **運用可否は引き続き「未判定」である。** 今回の成功は「対応可能な実PDFの範囲が広がった」という評価にとどまる。配信環境（GitHub Pages / IIS / 庁内端末）での確認、および生成元の異なる複数の実業務PDFでの成功率の把握は、引き続き未確認事項として残っている（16章）。
 
+### 15.9 engine v0.4.4 への更新と、実PDF `22550.pdf` での「令和 → しょうわ」の事前拒否（本ツール v0.4.4）
+
+#### 背景
+
+15.8（v0.4.3）の既存機能回帰確認では、`22550.pdf` の「令和 → しょうわ」（元のフォントに無い文字を含む異文字数置換、mode `fallback-font-multi-run`）を**成功する例として**記録していた。ところが、この置換は保存後のプレビューで、置換後の文字列「しょうわ」の末尾「わ」と、後続の「8」が重なって描画される不具合を含んでいた。
+
+原因は、`TJ` fallbackのadjustment計算が「後続文字の開始位置を維持すること」だけを保証し、「置換文字列自身がその位置まで描画されないこと」を保証していなかったことである。v0.4.1〜v0.4.3 のadjustment計算は、後続文字の開始位置をどれだけ動かせば元の位置に戻るかを計算するだけで、置換文字列自身の描画幅がその位置を超えていないかは確認していなかった。置換文字列が元のmatchより広い場合、adjustmentは後続文字の開始位置を正しく元へ戻せても、置換文字列自身のglyphがその位置より右側まで描画され、後続文字と重なる。
+
+engine v0.4.4 は、`checkTextMatchReplacement()` / `replaceTextMatch()` が共有する既存のTJ planner（`planTextArrayRewrite()`）に、置換前の安全性判定を追加した。置換開始位置から後続文字が実際に描画される位置までの利用可能幅（`availableAdvance`）と、fallback fontで置換文字列を描画したときの幅（`replacementAdvance`）を比較し、`replacementAdvance > availableAdvance` の場合は置換前に拒否する。後続文字の位置を安全に特定できない場合も、0とみなさず拒否する。詳細は `vendor/README.md` の「v0.4.4 の要点」および engine側 `docs/release-notes.md` を参照する。
+
+#### 本ツール側の対応
+
+- 取り込んだのは Release bundle 1ファイルだけである。Release assetのSHA-256が `.sha256` の値と一致することを確認したうえで差し替えた（`3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4` / 533,195 bytes、取得元 <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.4>）。engineの `src/` や内部モジュールは複製していない。
+- **`availableAdvance` / `replacementAdvance` の計算やTJ adjustmentの解析を本体側へ一切追加していない。** 操作フローは従来どおり `searchText()` → `checkTextMatchReplacement()` → `allowed: true` のときだけ `replaceTextMatch()` → `save()` → 再open である。
+- 拒否時のcode分類は変えていない。`FALLBACK_LAYOUT_UNSUPPORTED` は既存の再利用であり、引き続き `replace-unsafe`（「この箇所は置き換えられません」）として扱う。新しい `unsafeReason`（`fallback-replacement-overflows-slot` / `fallback-replacement-slot-unknown`）とdiagnosticsフィールドは、既存の「詳細（開発者向け）」欄へそのまま載せるだけで、画面の案内を分岐させる分類には使っていない（`js/app.js` の `showRefusal()` に `diagnostics` の表示を1行追加した）。
+- 編集用フォント（BIZ UDGothic Regular 1.05）は変更していない。
+
+#### 確認結果（公開PDF `22550.pdf`、本体UI経由）
+
+利用者からPDFの提供を受けて確認した（開発用サンドボックス環境からは `www.city.itoman.lg.jp` への外部通信がegress proxyにより拒否されるため、15.7・15.8 と同じ制約）。本体を静的HTTPサーバーから配信し、Chromium（Playwrightによる自動操作）でindex.htmlを操作した。PDFはリポジトリへコミットしておらず、fixtureとしても保存していない。
+
+「令和 → しょうわ」（15.8で成功と記録していたのと同じ、先頭の検索結果「令和8年度…」が対象）。
+
+| 操作 | 結果 |
+|---|---|
+| `22550.pdf` を選択 | 成功。「Engine」欄に v0.4.4、8,595件のテキストを認識 |
+| 「令和」を検索 | 34件見つかりました |
+| 先頭の検索結果「令和8年度…」を選択し、「しょうわ」を入力して置換 | **拒否。** `checkTextMatchReplacement()` が `allowed: false` / `code: FALLBACK_LAYOUT_UNSUPPORTED` / `unsafeReason: fallback-replacement-overflows-slot` / `diagnostics: { replacementAdvance: 4000, availableAdvance: 2250 }` を返す |
+| 画面表示 | 「この箇所は置き換えられません」。PDF内部用語（TJ、glyph、font metrics、availableAdvance、replacementAdvance等）は出ない |
+| 変更件数・変更履歴 | 拒否前後で「変更 0件」のまま変化なし。変更履歴欄も空のまま |
+| 保存ボタン | 無効のまま（`changeCount === 0`） |
+| プレビュー | 「変更前のPDFを表示しています。」のまま変化なし（編集中プレビューへの切り替えは発生しない） |
+| PDFのバイト列 | 変更しない（`replaceTextMatch()` を呼んでいないため） |
+| 継続操作 | 同じ検索結果から「令和 → 平成」へ続けて置換すると通常どおり成功する（`changeCount` が1件に増える） |
+| 外部通信 | 実行中、同一origin以外への要求は0件 |
+
+比較確認として、同じ `22550.pdf` を別インスタンス（別ブラウザcontext）で開き直し、「令和 → 平成」（既存fontで書ける経路）・「令和 → しょ」（fallback font経路）の両方を確認した。
+
+| 操作 | 結果 |
+|---|---|
+| 「令和」→「平成」（先頭の検索結果） | 成功。`allowed: true` / mode `same-length`（fallback fontを使わない）。保存 → 再open → 「平成」検索可、「令和」は33件に減少 |
+| 「令和」→「しょ」（先頭の検索結果） | 成功。`allowed: true` / mode `fallback-font-multi-run`。編集中プレビューが自動的に切り替わり、変更1件が記録される。保存 → 再open → 「しょ」1件、「令和」は33件に減少 |
+| 上記2件の保存後PDFの構造検証 | qpdf `--check` でいずれもエラーなし |
+| 後続文字「8年度」の描画位置 | この本体・engineと実装を共有しない独立実装（pdfminer.six）で置換前後のグリフ座標を比較し、「令和 → しょ」で完全一致（x座標の差 0.000pt。`293.102`/`302.102`/`306.782`/`324.783`/`324.783`/`342.783`のいずれも一致） |
+| 独立viewerでの表示 | Playwrightのheadless ChromiumではトップレベルのPDF navigationが常にdownload扱いになり、本ツールのiframeとは別の独立したページ表示による目視確認ができなかった（Playwright側の既知の制約）。代替として、qpdfの構造検証と、独立実装によるテキスト抽出・グリフ座標比較で内容を確認した |
+
+既存機能の回帰も確認した（NGなし）。`22550.pdf` に加え、開発環境で生成した合成PDF（パスワード保護PDF・`/P` 変更禁止PDF・編集用フォント配信失敗時）を用いた。PDF選択・ドラッグ＆ドロップ・本文認識・複数runにまたがる検索（mode `same-length` / `fallback-font-multi-run` として現れる）・同文字数／異文字数置換（元fontのみ）・削除・プレビュー切替・変更履歴・engine version表示・パスワードPDFの誤り／正しいパスワードの区別・`/P` PDFでの保存拒否・編集用フォント配信失敗（HTTP 404）時の起動停止・非PDFファイルでのエラー表示・HTTP環境（TLS無し）での動作、いずれも異常なし。
+
+#### 判定への影響
+
+この確認により、**v0.4.3 まで「成功する」と記録していた `22550.pdf` の「令和 → しょうわ」が、実際には視覚的に崩れたPDFを作っていたことが分かり、v0.4.4 はこれを保存前に検出して拒否するようになったことを、本体UIから確認した。** 同時に、安全に配置できる「令和 → しょ」・「令和 → 平成」は引き続き成功することも確認した。これは、engineのfail closed設計が「事前判定で許可したものは実際に安全である」という前提を保つよう改善され、その改善が本体側の実装変更なしに、既存の公開APIの流れ（`searchText()` → `checkTextMatchReplacement()` → `replaceTextMatch()` → `save()`）だけで反映されたことを示す。
+
+一方で、この確認は次を意味しない。
+
+- 任意のPDFを編集可能であること
+- あらゆる日本語を編集可能であること
+- 一般職員向けに運用可能であること
+
+**運用可否は引き続き「未判定」である。** むしろ今回の確認は、「書けるものを成功させ、崩れるものは保存前に断る」という一般利用者向け編集ツールとして重要な性質が実PDFで成立した、という技術的な到達点である。配信環境（GitHub Pages / IIS / 庁内端末）での確認、および生成元の異なる複数の実業務PDFでの成功率の把握は、引き続き未確認事項として残っている（16章）。
+
 ---
 
 ## 16. 現在の未確認事項
@@ -1034,7 +1094,7 @@ engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、neste
 ### 16.2 編集品質
 
 - 編集用フォント（BIZ UDGothic）で書いた文字と、元のフォントの文字が並んだときの見え方（書体の差）
-- 文字数が変わる置換でのレイアウトの見え方（編集用フォントを使う置換では後続文字と重なって見える場合がある：15.6）
+- 編集用フォント（BIZ UDGothic）を使う置換で、v0.4.4 の事前拒否（15.9）によりどの程度の割合の置換が断られるか。断られた箇所の実務上の頻度・許容度は未調査
 - 元のフォントに無い文字への置換をengineが断る箇所が、実業務PDFでどの程度現れるか（v0.4.1 / v0.4.2 で対象は広がったが、断られる箇所は残る）
 - 編集後PDFの印刷結果
 - 編集後PDFの、他ビューアでの表示互換性（一部PDFでは確認済み。範囲の拡大が必要）
@@ -1077,7 +1137,8 @@ engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、neste
 - [x] `TJ` で描かれた箇所への、元のフォントに無い文字の置換が、保存 → 再open → 検索まで成立し、後続文字の位置が動かない（15.6）
 - [x] フォントの幅情報がindirect objectで書かれたPDFで、fallback font置換の可否がengine側だけで判断され、断られた場合も編集状態が変化しない（15.7）
 - [x] 公開PDF `22550.pdf` での「令和」→「しょ」が本体UIから成立し、後続文字の位置が独立実装との比較で一致する（15.8）
-- [ ] 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）での、v0.4.3 における検索・置換
+- [x] 公開PDF `22550.pdf` での「令和」→「しょうわ」（置換文字列が後続文字と重なる箇所）が、PDFを変更する前に本体UIから拒否され、変更件数・変更履歴・プレビューが変化しない（15.9）
+- [ ] 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）での検索・置換
 - [ ] IISが `.ttf` を配信でき、編集用フォントを読み込めること
 - [ ] GitHub Pages上で `vendor/idontlovepdf-engine.js` がES Moduleとして読み込める（MIME type・相対path・`.nojekyll` の効き）
 - [ ] IIS等の庁内静的Webサーバーへ配置して同様に動作する
@@ -1089,7 +1150,7 @@ engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、neste
 
 > **「一般職員向け編集UIの設計」**
 
-検索・置換・保存、複数の描画単位にまたがる語句の検索・置換、PDFプレビューに加え、元PDFのフォントに無い文字への置換まで到達し（v0.4.2）、公開PDF `22550.pdf` での「令和 → しょ」が本体UIから成立した（v0.4.3・15.8）。次は実業務PDFの多様化と配信環境での確認、および運用可否の判定に必要な材料集めである。
+検索・置換・保存、複数の描画単位にまたがる語句の検索・置換、PDFプレビューに加え、元PDFのフォントに無い文字への置換まで到達し（v0.4.2）、公開PDF `22550.pdf` での「令和 → しょ」が本体UIから成立した（v0.4.3・15.8）。さらに、置換文字列が後続文字と重なる「令和 → しょうわ」を保存前に事前拒否できることも本体UIから確認した（v0.4.4・15.9）。次は実業務PDFの多様化と配信環境での確認、および運用可否の判定に必要な材料集めである。
 
 ### 17.1 次に行うこと
 
@@ -1108,7 +1169,7 @@ engine v0.4.3 は、既存parserの再利用（`topLevelArrayElements()`、neste
 
 配信環境での確認も引き続き必要である。
 
-1. 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）に加え、複合機・Adobe製品・Word等、生成元の異なる複数の実業務PDFで、v0.4.3 の検索・置換（元のフォントに無い文字を含む置換を含む）を確認する
+1. 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）に加え、複合機・Adobe製品・Word等、生成元の異なる複数の実業務PDFで、検索・置換（元のフォントに無い文字を含む置換を含む）を確認する
 2. GitHub Pagesへ配信し、「16.5」の残りを確認する
 3. IIS等の庁内静的Webサーバーへ配置し、`.ttf` の配信を含めて同様に確認する
 4. 庁内端末（実運用ブラウザ・フォント構成）で確認する
@@ -1149,7 +1210,7 @@ engineのデバッグ用画面（text run一覧、object番号等）を、その
 「16. 現在の未確認事項」、特に次が概ね解消してはじめて、運用可否の判定へ進む。
 
 - 配信環境（Pages / IIS / 庁内端末）での動作（IISでの `.ttf` 配信を含む）
-- 公開PDF `22550.pdf` および利用者環境の実業務PDFでの、v0.4.2 における検索・置換
+- 利用者環境の実業務PDFでの検索・置換
 - 生成元の異なる実業務PDFでの成功率と編集品質
 - 一般職員が説明なしで操作できるか
 - 「PDFの作りによっては置き換えられない箇所がある」という制限を、一般職員が納得して使えるか
@@ -1171,3 +1232,4 @@ engineのデバッグ用画面（text run一覧、object番号等）を、その
 | 2026-09-03 | engine v0.4.1 の正式Releaseを取り込み（本ツール v0.4.1）。Release assetのSHA-256を `.sha256` と照合したうえで `vendor/idontlovepdf-engine.js` を差し替え、`TJ` で描かれた箇所への fallback font 置換が、本体の既存フロー（`searchText()` → `checkTextMatchReplacement()` → `replaceTextMatch()` → `save()` → 再open）と公開APIだけで成立することを 15.6 として記録。新しいerror code `FALLBACK_FONT_METRICS_UNAVAILABLE` / `FALLBACK_CHAR_SPACING_UNSUPPORTED` を既存の `replace-unsafe` 相当へ追加した以外、本体のロジック・UIは変更していない。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
 | 2026-09-03 | engine v0.4.2 の正式Releaseを取り込み（本ツール v0.4.2）。Release assetのSHA-256を `.sha256` およびRelease記載の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替え、開発環境で生成した日本語PDFによる実ブラウザ回帰（全64項目・NG 0件）を 15.7 として記録。本体は公開APIのみの利用を維持し、PDF内部構造を読む処理も新しいerror分岐も追加していない（変更は、開発者向け詳細欄へ `unsafeReason` を載せる1行のみ）。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。**実PDF `22550.pdf` は開発環境から取得できず、「令和」→「しょ」の再試験は未実施**であり、実機確認事項として残した。あわせて、v0.4.2 でも `/W` / `/Widths` 配列の要素そのものがindirect referenceの場合は解決できないことを公開APIだけで確認し、engine側の次課題として 15.7 に記録した。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
 | 2026-09-03 | engine v0.4.3 の正式Releaseを取り込み（本ツール v0.4.3）。Release assetのSHA-256を `.sha256` およびGitHub Release記載の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` / 531,745 bytes）。v0.4.3 は `/DescendantFonts` がinline dictionaryとして書かれたCIDFontへの対応を追加し、公開PDF `22550.pdf` の `/F3` で v0.4.2 まで `FALLBACK_FONT_METRICS_UNAVAILABLE` により拒否されていた「令和 → しょ」が、**本体UIから初めて成立した**ことを 15.8 として記録した。利用者から提供を受けたPDFで、静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）により、検索 → 検索結果の選択 → 置換 → 編集中プレビュー → 保存 → 再open → 再検索まで、本体の既存フロー・既存API（`searchText()` / `checkTextMatchReplacement()` / `replaceTextMatch()` / `save()`）だけで確認した。後続文字「8年度」の描画位置は、独立実装（pdfminer.six）でのグリフ座標比較により置換前後で完全一致（差 0.000pt）することを確認し、保存したPDFはqpdfの構造検証と、本ツールのiframeとは別の独立したページ表示によるChromium本体のPDFビューアでの目視確認の両方を通過した。同じPDFでの「令和 → 平成」（既存font経路、mode `same-length`）も別インスタンスで回帰確認した。本体側はPDF内部構造（`/DescendantFonts`・CIDFont等）を読む処理を追加していない。PDFはリポジトリへコミットも、fixtureとしての保存もしていない。**この確認は「対応可能な実PDFの範囲が広がった」ことを示すものであり、任意のPDFの編集・一般職員向け運用が可能になったことを意味しない。運用可否は引き続き「未判定」である。** |
+| 2026-09-04 | engine v0.4.4 の正式Releaseを取り込み（本ツール v0.4.4）。Release assetのSHA-256を `.sha256` の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4` / 533,195 bytes）。v0.4.4 は、`TJ` fallbackのadjustment計算が「後続文字の開始位置を維持すること」しか保証せず「置換文字列自身がその位置まで描画されないこと」を保証していなかった不具合を修正し、置換前に `availableAdvance` と `replacementAdvance` を比較して安全に配置できない場合は拒否するようになった（`code: FALLBACK_LAYOUT_UNSUPPORTED`、`unsafeReason: fallback-replacement-overflows-slot` / `fallback-replacement-slot-unknown`）。公開PDF `22550.pdf` で、v0.4.3 まで成功例として記録していた「令和 → しょうわ」が実際には置換後の「わ」と後続の「8」が重なるPDFを作っていたことを確認したうえで、v0.4.4 ではこれが `checkTextMatchReplacement()` の時点で `allowed: false` となり、PDFを変更する前に拒否されることを本体UIから確認し、15.9 として記録した。同じPDFでの「令和 → しょ」（fallback font経路）・「令和 → 平成」（既存font経路）は引き続き成功し、拒否のあとも別の置換を通常どおり続行できることを確認した。本体側は `availableAdvance` / `replacementAdvance` の計算やTJ adjustmentの解析を追加しておらず、変更は開発者向け詳細欄へ `diagnostics` を1行追加したのみである。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。技術的実現性「あり」と運用可否「未判定」は変更していない。 |

@@ -17,18 +17,18 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.4.3 |
+| version | v0.4.4 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` |
-| asset size | 531,745 bytes |
+| SHA-256 | `3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4` |
+| asset size | 533,195 bytes |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
-| 取得日 | 2026-09-03 |
+| 取得日 | 2026-09-04 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.3>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.4.4>
 
-取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と上表の値の双方に一致することを確認している。編集用フォントは変更していない。
+取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4`）。編集用フォントは変更していない。
 
 ### 取り扱いの原則
 
@@ -46,6 +46,14 @@
   - `ENGINE_VERSION`
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
+
+### v0.4.4 の要点（本体側の設計に関わるもの）
+
+- **実PDF `22550.pdf` の `令和8年度` で実際に見つかった視覚的な不具合の修正である。** v0.4.3 までは、「令和 → しょ」は成功する一方、「令和 → しょうわ」は `checkTextMatchReplacement()` が `allowed: true` を返して置換・保存まで進み、保存後のプレビューで置換後の `わ` と後続の `8` が重なって描画されていた。原因は、`TJ` fallbackのadjustment計算が「後続文字の開始位置を維持すること」だけを保証し、「置換文字列自身がその位置まで描画されないこと」を保証していなかったことである。
+- **v0.4.4 は、置換前にこの重なりを検出して拒否するようになった。** `令和 → しょうわ` は `allowed: false`（`code: FALLBACK_LAYOUT_UNSUPPORTED`、`unsafeReason: fallback-replacement-overflows-slot`）となり、PDFを変更する前に断られる。後続文字が実際にどこから描画されるか安全に確定できない場合は、`unsafeReason: fallback-replacement-slot-unknown` として同じく拒否する。拒否時は開発者向けの `diagnostics: { replacementAdvance, availableAdvance }` が付くことがある。
+- **`令和 → しょ` は引き続き成功する。** 判定はengine内部の `checkTextMatchReplacement()` / `replaceTextMatch()` が共有する既存のTJ planner1箇所で行われ、新しいmodeは増えていない。文字を縮小する、後続文字を移動する、reflowする、といった代替策は実装されていない。「安全に配置できない場合は断る」という既存方針のままである。
+- **本体側から見える公開APIは変わっていない。** `FALLBACK_LAYOUT_UNSUPPORTED` は既存code の再利用であり、新しい公開error codeは追加されていない。新しい `unsafeReason` の値と `diagnostics` フィールドの追加のみで、**本体側でTJ・glyph幅・availableAdvance・replacementAdvanceを計算したり、`unsafeReason` の値を使って独自の置換可否判定を行ったりはしない。** 判定は常に `checkTextMatchReplacement()` の戻り値だけで行う。
+- v0.4.3 までの成果（inline `/DescendantFonts` dictionary対応、`/W`・`/DW`の間接object解決、実PDF `22550.pdf` の `/F3` font metrics解決等）はそのまま維持されている。
 
 ### v0.4.3 の要点（本体側の設計に関わるもの）
 
@@ -93,7 +101,7 @@ v0.4.1 で入った次の性質は v0.4.2 でも変わっていない。
 | `FALLBACK_WORD_SPACING_UNSUPPORTED` | 単語間隔の指定があり、空白を含む置換が別扱いになる |
 | `FALLBACK_CHAR_SPACING_UNSUPPORTED` | 文字間隔の指定があり、後続文字の位置を維持できない |
 | `FALLBACK_FONT_METRICS_UNAVAILABLE` | 置換箇所が占めていた幅を正確に測れず、後続文字の位置を維持できない（v0.4.2 で読める幅情報の範囲は広がったが、codeそのものは変わらない） |
-| `FALLBACK_LAYOUT_UNSUPPORTED` | フォント指定・サイズ等を元へ戻せない |
+| `FALLBACK_LAYOUT_UNSUPPORTED` | フォント指定・サイズ等を元へ戻せない、または置換文字列自身が後続文字の位置まで描画されてしまう（`unsafeReason: fallback-replacement-overflows-slot` / `fallback-replacement-slot-unknown`、v0.4.4） |
 | `FALLBACK_WRITING_MODE_UNSUPPORTED` | 縦書き等、横書きのfallback fontで代替できない |
 | `FALLBACK_EDIT_REQUIRES_SAVE` | 同じ箇所を続けて置換しようとした（保存して開き直せば可） |
 | `FALLBACK_FONT_ALREADY_IN_USE` | 置換後に別のfallback fontへ差し替えようとした |
@@ -101,7 +109,7 @@ v0.4.1 で入った次の性質は v0.4.2 でも変わっていない。
 | `MULTI_RUN_LENGTH_CHANGE_UNSUPPORTED` | 複数の描画単位にまたがる箇所の異文字数置換で、間隔指定があり安全に書けない |
 | `MULTI_RUN_FONT_CHANGE_UNSUPPORTED` | 箇所の途中で書体が変わっている |
 
-拒否の戻り値には、`code` / `reason` に加えて開発者向けの `unsafeReason` が付くことがある（v0.4.2）。**本体側の分類はあくまで `code` で行い、`unsafeReason` の値で画面の案内を分けない。** 値は「詳細（開発者向け）」欄へそのまま載せ、engineへ報告するときの手がかりとして使う。
+拒否の戻り値には、`code` / `reason` に加えて開発者向けの `unsafeReason`（v0.4.2）や `diagnostics`（v0.4.4。`{ replacementAdvance, availableAdvance }` 等）が付くことがある。**本体側の分類はあくまで `code` で行い、`unsafeReason` や `diagnostics` の値で画面の案内を分けたり、独自の置換可否判定を行ったりしない。** 値は「詳細（開発者向け）」欄へそのまま載せ、engineへ報告するときの手がかりとして使う。
 
 `FALLBACK_FONT_MISSING_GLYPH` と `FONT_ENCODING_UNSUPPORTED` は、対象文字を `characters`（1文字ずつの配列）で返す。画面へ文字を出すときはこれを使い、message文字列を解析して取り出さない。構造上の拒否にも参考情報として `characters` が付くことがあるが、その場合の原因は文字ではないため画面へ出さない。
 

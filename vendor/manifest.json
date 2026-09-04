@@ -1,0 +1,33 @@
+{
+  "$comment": "CI/保守用のmachine-readable manifest。本体runtimeはこのファイルを取得・参照しない。期待値の単一の情報源として、ここと vendor/README.md の内容を一致させる。",
+  "tool": {
+    "version": "0.5.0"
+  },
+  "engine": {
+    "repository": "YanTKYS/idontlovepdf-engine",
+    "version": "0.5.0",
+    "tag": "v0.5.0",
+    "asset": "idontlovepdf-engine.js",
+    "path": "vendor/idontlovepdf-engine.js",
+    "sha256": "58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895",
+    "size": 541649
+  },
+  "fonts": {
+    "gothic": {
+      "name": "BIZ UDGothic Regular",
+      "version": "1.05",
+      "path": "vendor/fonts/BIZUDGothic-Regular.ttf",
+      "sha256": "709fcd41e3209fb765da750472f55ccdf925653e9fa7e1eb007cb65c8f749c75",
+      "size": 4667376,
+      "license": "vendor/fonts/OFL.txt"
+    },
+    "mincho": {
+      "name": "BIZ UDMincho Regular",
+      "version": "1.06",
+      "path": "vendor/fonts/BIZUDMincho-Regular.ttf",
+      "sha256": "468ee6d9b149ca144809e03841bf18740ecf014e055a00da6ecaf1aaf4165af2",
+      "size": 6153932,
+      "license": "vendor/fonts/OFL-BIZUDMincho.txt"
+    }
+  }
+}

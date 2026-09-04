@@ -13,7 +13,7 @@ PDFの処理は、同一開発者による別リポジトリ `YanTKYS/idontlovep
 
 **試作版。PDFの文字を検索し、1件ずつ置き換え、変更前と編集中のPDFを見比べて、編集済みPDFとして保存できる。元のPDFのフォントに含まれていない日本語の文字へも置き換えられる。**
 
-`idontlovepdf-engine` v0.4.4 の正式Release bundleと、編集用フォント BIZ UDGothic を同梱し、次の操作を一般職員向けの画面として提供する。
+`idontlovepdf-engine` v0.5.0 の正式Release bundleと、編集用フォント BIZ UDGothic・BIZ UD明朝を同梱し、次の操作を一般職員向けの画面として提供する。元のPDFの書体に近い編集用フォントは自動的に選ばれ、利用者が選ぶ画面は無い（詳細は「編集用フォントについて」を参照）。
 
 1. PDFを選択する
 2. 直したい文字を検索する
@@ -46,7 +46,7 @@ PDFの処理は、同一開発者による別リポジトリ `YanTKYS/idontlovep
 - ブラウザ内でPDFを読み込み、本文テキストを認識する
 - 本文の文字を検索する（部分一致）。PDF内部で複数の描画単位に分かれて記録されている語句も、続いた1つの文字列として検索できる
 - 検索結果から1件を選んで置き換える
-- **元のPDFのフォントに含まれていない日本語の文字へ置き換える**（同梱した編集用フォントで書く）
+- **元のPDFのフォントに含まれていない日本語の文字へ置き換える**（元PDFの書体に近い編集用フォントで書く）
 - 文字数が変わる置き換えを行う（PDFの作りによっては断られる。下記参照）
 - 文字を削除する（置き換える文字を空欄にする）
 - 変更前のPDFと編集中のPDFをその場でプレビューし、切り替えて見比べる
@@ -82,15 +82,18 @@ PDFの処理は、同一開発者による別リポジトリ `YanTKYS/idontlovep
 
 ### 編集用フォントについて
 
-元のPDFへ埋め込まれたフォントは、その文書で実際に使った文字だけを含むことが多い。そのため「元のPDFに出てこない文字」へ置き換えるには、別のフォントが必要になる。本ツールは BIZ UDGothic（SIL Open Font License 1.1）を同梱し、これを編集用フォントとして使う。
+元のPDFへ埋め込まれたフォントは、その文書で実際に使った文字だけを含むことが多い。そのため「元のPDFに出てこない文字」へ置き換えるには、別のフォントが必要になる。本ツールは編集用フォントとして BIZ UDGothic・BIZ UD明朝（いずれもSIL Open Font License 1.1）の2書体を同梱する。
+
+**元のPDFの書体に近い編集用フォントは自動的に選ばれる。** 本ツールは2つのフォントのデータをそのままengineへ渡すだけで、元のPDFの書体がゴシック系・明朝系のどちらに近いかを判定し、どちらの編集用フォントを使うかを決めるのはengineの役割である。本ツール側でこの判定は行わない。判定の元になるPDF内部の情報（フォント種別のフラグ等）は開発者向け詳細欄にのみ表示し、通常の画面には出さない。
 
 - 元のフォントで書ける場合は、従来どおり元のフォントで書く。編集用フォントは必要なときだけ使われる。
 - 元のPDFのフォントに無い文字への置換は、engineが後続の文字位置を安全に維持できると判断し、かつ置換文字列自身が後続の文字と重ならないと判断した箇所で行える。判断には元のフォントの文字幅がPDF自身から正確に読み取れる必要があり、読み取れないフォントや、安全な配置を判断できない箇所では断る。どの箇所が該当するかを利用者が意識する必要はない。
-- 編集用フォントが実際に使われた場合、そのフォントが保存するPDFへ埋め込まれるため、ファイルサイズが約3MB増える。同じPDFで置換を繰り返しても、増えるのは1回だけである。
-- 編集用フォントはリポジトリに同梱したファイルだけを使う。実行時にインターネットから取得しない。
-- 編集用フォントを読み込めない場合、ツールはエラーを表示してPDFを受け付けない。黙って機能を落とした状態では動かさない。確認する時点は次の2段階である。
-  - **起動時**: ファイルが無い、サーバーが配信できない、中身が空 → その場でエラーになる
+- 編集用フォントが実際に使われた場合、そのフォント（ゴシック・明朝のうち実際に選ばれた一方だけ）が保存するPDFへ埋め込まれるため、ファイルサイズが数MB増える。同じPDF・同じ書体系統で置換を繰り返しても、増えるのは1回だけである。
+- 編集用フォントはリポジトリに同梱したファイルだけを使う。実行時にインターネットから取得しない。フォント選択もengine内部で完結し、外部（システムフォント、Local Font Access API等）を参照しない。
+- 編集用フォントは2つとも読み込めた場合だけツールを使える。**どちらか一方だけが読み込めた場合に、もう一方だけの構成へ黙って縮退することはしない。** どちらか一方でも読み込めない場合、ツールはエラーを表示してPDFを受け付けない。確認する時点は次の2段階である。
+  - **起動時**: いずれかのファイルが無い、サーバーが配信できない、中身が空 → その場でエラーになる
   - **最初のPDFを開いた時点**: 取得はできたが、フォントとして読めない（配信設定によりHTML等が返る、ファイルが壊れている等） → 編集画面を開かずエラーになる
+- 太字・斜体・weight（文字の太さ）・stretch（字幅）に応じたフォントの切り替えは行わない。明朝・ゴシックの2系統の選択にとどまる。元のPDFと完全に同じフォントへ合わせる機能ではない。
 
 ## 構成
 
@@ -98,18 +101,24 @@ PDFの処理は、同一開発者による別リポジトリ `YanTKYS/idontlovep
 index.html                          ツール本体
 css/style.css                       画面のスタイル
 js/app.js                           画面とエンジンの接続
-vendor/idontlovepdf-engine.js       idontlovepdf-engine v0.4.4 の正式Release bundle
+vendor/idontlovepdf-engine.js       idontlovepdf-engine v0.5.0 の正式Release bundle
 vendor/fonts/BIZUDGothic-Regular.ttf 編集用フォント（BIZ UDGothic Regular 1.05）
-vendor/fonts/OFL.txt                編集用フォントのライセンス（SIL OFL 1.1）
+vendor/fonts/BIZUDMincho-Regular.ttf 編集用フォント（BIZ UDMincho Regular 1.06）
+vendor/fonts/OFL.txt                BIZ UDGothicのライセンス（SIL OFL 1.1）
+vendor/fonts/OFL-BIZUDMincho.txt    BIZ UDMinchoのライセンス（SIL OFL 1.1）
+vendor/manifest.json                同梱engine・フォントのversion/SHA-256（CI/保守用）
 vendor/README.md                    取り込んだengine・フォントの情報と更新手順
 docs/feasibility.md                 実現可能性の検討記録
 reference/guide_context.md          開発ガイド `lg_toolkit_guide` の最小ガイド（参照用）
+.github/workflows/ci.yml            CI（後述）
+package.json                        CI/開発テスト専用の依存関係定義（後述）
+scripts/ci/                         CIが実行するNode.jsスクリプト
 .nojekyll                           GitHub PagesでJekyll処理を無効化する（後述）
 ```
 
-npm、Node.js、esbuild、webpack、Vite、Parcel等のビルド環境は本リポジトリへ導入していない。service worker、WebAssembly、サーバー側処理も導入していない。
+**ツール本体の実行・配布にnpmは不要である。** npm・Node.js・playwright（`package.json`）はCI（後述）と開発時のテストのみで使う。esbuild、webpack、Vite、Parcel等のビルド環境も導入していない。service worker、WebAssembly、サーバー側処理も導入していない。
 
-`idontlovepdf-engine` 側で生成済みのブラウザ向け1ファイルbundleを、そのままES Moduleとして読み込む。最終構成は静的ファイルのみである。
+`idontlovepdf-engine` 側で生成済みのブラウザ向け1ファイルbundleを、そのままES Moduleとして読み込む。最終的にサーバーへ配置するのは `index.html`・`css/`・`js/`・`vendor/` の静的ファイルだけであり、`package.json` や `scripts/ci/` は配置しなくてよい。
 
 ### エンジンとの責務分担
 
@@ -119,10 +128,10 @@ npm、Node.js、esbuild、webpack、Vite、Parcel等のビルド環境は本リ�
 |---|---|
 | PDFの解析、テキストの分割単位の判断、語句の検索（`searchText()`） | engine |
 | 置換可否の判断（`checkTextMatchReplacement()`）、置換（`replaceTextMatch()`）、保存（`save()`） | engine |
-| 元のフォントで書くか編集用フォントで書くかの判断、フォントの埋め込み | engine |
+| 元のフォントで書くか編集用フォントで書くかの判断、編集用フォント2種類のうちどちらを使うかの判断、フォントの埋め込み | engine |
 | 画面表示、操作の順序、編集用フォントの読み込み、プレビュー、変更履歴、エラーの言い換え | 本リポジトリ |
 
-本リポジトリでは、PDFの描画命令の解釈、テキストの分割単位の連結、フォントの中身の判定、object番号の参照といったPDF内部構造の判断を行わない。
+本リポジトリでは、PDFの描画命令の解釈、テキストの分割単位の連結、フォントの中身の判定、object番号の参照といったPDF内部構造の判断を行わない。編集用フォントについても、`/FontDescriptor` や `/Flags`（Serifビット等）をPDFから読む処理、フォント名やresource名からゴシック・明朝を判定する処理は本リポジトリには実装していない。本体側の責務は、2種類のフォントのバイト列をengineへ渡すことだけである。
 
 ## 外部依存・通信
 
@@ -152,7 +161,7 @@ npm、Node.js、esbuild、webpack、Vite、Parcel等のビルド環境は本リ�
 - `.js` をJavaScriptのMIME type（`text/javascript` 等）で配信すること（IISの既定設定で満たされる）
 - `.ttf` を配信できること（IISの既定設定で満たされる）。MIME typeを絞った構成の場合のみ、`.ttf` → `font/ttf` の登録を確認する
 
-`.ttf` を配信できないと編集用フォントを読み込めず、ツールは「編集用フォントを読み込めませんでした。配置を確認してください。」と表示して起動を止める。この表示が出た場合は、`vendor/fonts/BIZUDGothic-Regular.ttf` が公開ディレクトリへ配置されているかと、上記のMIME設定を確認する。
+`.ttf` を配信できないと編集用フォントを読み込めず、ツールは「編集用フォントを読み込めませんでした。配置を確認してください。」と表示して起動を止める。この表示が出た場合は、`vendor/fonts/BIZUDGothic-Regular.ttf` と `vendor/fonts/BIZUDMincho-Regular.ttf` の両方が公開ディレクトリへ配置されているかと、上記のMIME設定を確認する。
 
 GitHub Pagesでは既定でJekyllが動作し、`vendor/` ディレクトリが公開対象から除外される。これを避けるため、リポジトリ直下に `.nojekyll` を置いている。**削除しないこと。**
 
@@ -190,9 +199,23 @@ ES Moduleはブラウザのセキュリティ制約により `file://` から読
 
 ### 現在確認済み
 
-静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）、engine v0.4.4での確認。バージョンごとの確認経緯は `docs/feasibility.md` に記録する。本項は現時点で確認できている範囲だけを示す。
+静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）での確認。バージョンごとの確認経緯は `docs/feasibility.md` に記録する。本項は現時点で確認できている範囲だけを示す。
 
-**公開PDF `22550.pdf`（糸満市が公開している資料。リポジトリへは含めていない）を用いた確認。**
+**engine v0.5.0・BIZ UDGothic/BIZ UD明朝の同梱後の確認（合成PDF）。**
+
+開発環境から公開PDF `22550.pdf` の配布元へ到達できないため（後述の「未確認」参照）、v0.5.0の取り込み後は、`22550.pdf` の「令和8年度」で過去に報告された不具合の形（`TJ` 配列で「令和」を描き、直後の `Tj` で「8年度」を続けて描く構成）を再現した合成PDFを用いて、実際に同梱した engine v0.5.0 bundle と実際の BIZ UDGothic / BIZ UD明朝 フォントファイルで確認した。静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）で、本体UI（`index.html` → PDF選択 → 検索 → 置換）を通して確認している。
+
+- [x] engineがSerifと判定した合成PDFで「令和 → しょ」が成功し、保存後PDFへ実際に埋め込まれたfallback fontが `BIZUDMincho-Regular` であることを、保存後PDFのバイト列（`/BaseFont`）で確認した
+- [x] engineがSans・判定不能（FontDescriptorなし）と判定した合成PDFで「令和 → しょ」が成功し、埋め込まれたfallback fontが `BIZUDGothic-Regular` であることを同様に確認した（v0.4.4までの挙動を維持）
+- [x] いずれの場合も「令和 → 平成」（元のフォントで書ける経路、mode `single-run`）はfallback fontを埋め込まずに成功する
+- [x] 「令和 → しょうわ」は、Serif・Sansいずれの合成PDFでも `checkTextMatchReplacement()` が `allowed: false`（`code: FALLBACK_LAYOUT_UNSUPPORTED`、`unsafeReason: fallback-replacement-overflows-slot`）を返し、PDFを変更する前に断られる。`diagnostics`（`replacementAdvance: 4000` / `availableAdvance: 2000`）は、実際に選ばれた側のフォント（Mincho・Gothicのいずれも「しょうわ」4文字が1文字1000 unitsで同じ結果になる）の実glyph幅から計算されたものであり、本体側で固定した値ではない
+- [x] 上記の拒否は本体UI上で「この箇所は置き換えられません」とだけ表示され、拒否後も変更件数・変更履歴・保存ボタンの状態は変化せず、その後に別の置換（「令和 → しょ」）を続行できる
+- [x] 保存・再open後、置換後の文字列が検索でき、置換前の文字列の検索結果が1件減っている
+- [x] 実行中、同一origin以外への要求が発生しない、JavaScriptのconsole error・uncaught errorが発生しない
+
+**この確認は合成PDFによるものであり、`22550.pdf` 自体でのv0.5.0再確認ではない。** `22550.pdf` は「令和8年度」を実際にこの構成（`TJ` + 続く `Tj`）で描画していることをengine側のテストが前提としているが、本体側では実PDFそのものを確認できていない。詳細は「未確認」を参照。
+
+**公開PDF `22550.pdf`（糸満市が公開している資料。リポジトリへは含めていない）を用いた、engine v0.4.4時点での確認（既存の記録）。**
 
 - [x] `22550.pdf` を選択し、8,595件のテキストを認識する（「Engine」欄に v0.4.4 表示）
 - [x] 「令和」を検索し、34件の検索結果が得られる。先頭の検索結果「令和8年度…」を選ぶ
@@ -213,7 +236,7 @@ ES Moduleはブラウザのセキュリティ制約により `file://` から読
 - [x] 空欄への置換による文字削除
 - [x] 変更前／編集中プレビューの自動切替・手動切替
 - [x] 成功した置換の変更履歴への記録
-- [x] engine version表示（v0.4.4）
+- [x] engine version表示（v0.4.4時点。v0.5.0での表示は上記「engine v0.5.0・BIZ UDGothic/BIZ UD明朝の同梱後の確認」を参照）
 - [x] パスワード保護PDF（誤ったパスワードと正しいパスワードが区別される）
 - [x] `/P` で変更禁止のPDF（検索はできるが、保存は「このPDFは編集結果を保存できません」で拒否される）
 - [x] 編集用フォントを配信できない場合（HTTP 404）、起動時にエラーを表示してPDFを受け付けない
@@ -224,13 +247,17 @@ ES Moduleはブラウザのセキュリティ制約により `file://` から読
 
 ### 未確認
 
+- [ ] **`22550.pdf` でのengine v0.5.0再確認。** 開発用サンドボックス環境から `www.city.itoman.lg.jp` へ到達できない（egress proxyが当該ホストを拒否。v0.4.2〜v0.4.4と同じ制約が今回も再現した）。`22550.pdf` の実際のFontDescriptorがSerif・Sans・判定不能のいずれと分類されるか、BIZ UD明朝が実際に選ばれるかは未確認である。上記「現在確認済み」の合成PDFでの確認は、あくまで代替の proxy であり、`22550.pdf` そのものの結果を保証しない
 - [ ] GitHub Pages 上での動作
 - [ ] IIS等の庁内静的Webサーバー上での動作（`.ttf` の配信を含む）
 - [ ] 庁内端末（実運用ブラウザ・フォント構成）での動作
 - [ ] 利用者環境の実業務PDFでの検索・置換（v0.3.0 までに読み込みのみ確認した `2024_subsidy_koubo_outline.pdf` を含む）
 - [ ] 複合機・Adobe製品など、`22550.pdf` 以外の生成元の実業務PDFでの編集品質・成功率
+- [ ] 見た目の比較（明朝系PDFでBIZ UD明朝を使った場合と、v0.4.4相当のBIZ UDGothic固定との比較）は、実PDFではなく合成PDFの範囲でのみ行った。実PDFでの比較は未確認
 
 未確認の項目は、確認できた時点でこのチェックリストと `docs/feasibility.md` を更新する。
+
+`.github/workflows/ci.yml` のCI（後述）は、これらの手動確認とは別に、PRごとに自動で次を確認する: 同梱engine bundle・編集用フォント2種類のSHA-256一致、静的ファイル構成、本体UIの最小browser smoke test。engine内部のPDF処理そのもの（Serif/Sans判定、置換安全性判定等）や `22550.pdf` を使った確認はCIの対象外である（後述「CI」参照）。
 
 ## エンジン・編集用フォントの更新
 
@@ -250,7 +277,8 @@ engine versionと編集用フォントのversion・SHA-256は `vendor/README.md`
 
 - GitHub Pages / IIS 上での動作は未確認（「動作確認」を参照）。
 - PDFの作りによっては、元のフォントに無い文字への置換や、文字数が変わる置換を断られる箇所がある。engineが安全に書き換えられないと判断した場合で、本ツールでは迂回しない（「置き換えられない場合」を参照）。
-- 編集用フォントが使われた場合、保存するPDFのサイズが約3MB増える。
+- 編集用フォントが使われた場合、保存するPDFのサイズが数MB増える。
+- 編集用フォントの自動選択は、明朝・ゴシックの2系統のみ。太字・斜体・weight・stretchに応じた切り替えは行わない。元のPDFと完全に同じフォントへ合わせる機能ではない。システムフォントの取得やLocal Font Access APIは使用しない。
 - 編集用フォントを使った置換では、後続の文字の位置を動かさないことを優先する。置換後の文字列自身が後続の文字と重なってしまう場合は、PDFを変更する前に断る（「置き換えられない場合」を参照）。文字を縮小したり後続文字を動かしたりして無理に配置することはしない。
 - 置換は1件ずつ行う。「すべて置換」は用意していない。
 - 検索結果の表示は先頭100件まで。件数は全件を表示するが、それ以降を選ぶには検索する文字を長くして絞り込む。
@@ -263,11 +291,25 @@ engine versionと編集用フォントのversion・SHA-256は `vendor/README.md`
 
 | 区分 | 値 |
 |---|---|
-| 本ツール | v0.4.4 |
-| 同梱engine | idontlovepdf-engine v0.4.4 |
-| 同梱編集用フォント | BIZ UDGothic Regular 1.05 |
+| 本ツール | v0.5.0 |
+| 同梱engine | idontlovepdf-engine v0.5.0 |
+| 同梱編集用フォント | BIZ UDGothic Regular 1.05 / BIZ UDMincho Regular 1.06 |
 
 v0.4.0 から、本ツールのversionを同梱engineのversionへ合わせる。
+
+## CI
+
+`.github/workflows/ci.yml` が、`pull_request`・`main`への`push`・`workflow_dispatch`で自動実行される。本体が**静的Webアプリとしての構成を壊していないこと**を確認する最小限のCIであり、engine内部のPDF処理テスト（Serif/Sans判定、置換安全性判定等）はここでは行わない。それはengine repository自身のCIの責務であり、責務を重複させない。
+
+CIが確認する範囲は次の3点だけである。
+
+1. **vendor整合性**（`scripts/ci/check-vendor-integrity.mjs`）: `vendor/idontlovepdf-engine.js`・`vendor/fonts/BIZUDGothic-Regular.ttf`・`vendor/fonts/BIZUDMincho-Regular.ttf` が、`vendor/manifest.json` に記録したSHA-256・サイズと一致すること。engine bundleがES Moduleとして読み込め、`ENGINE_VERSION === "0.5.0"` であること。
+2. **静的構成**（`scripts/ci/check-static-structure.mjs`）: 必須の静的ファイルが揃っていること、`js/app.js` に構文エラーが無いこと、runtimeとなるHTML/CSS/JSに外部URLへの参照が追加されていないこと（README等の説明用URLは対象外）。
+3. **browser smoke test**（`scripts/ci/browser-smoke.mjs`）: 静的HTTPサーバーをCI内で起動し、Chromium（Playwright）で `index.html` を開き、engine bundleのロード・Engine欄のversion表示・2種類のfontのHTTP取得・font読み込み完了後のPDF選択UI有効化・同一origin以外への要求が発生しないこと・console error/uncaught errorが無いことを確認する。実PDFの読み込みや検索・置換は行わない。
+
+`22550.pdf` はCI fixtureとしてコミットしていない（配布元の都合でCIが壊れることを避けるため）。実PDFでの回帰確認は、引き続き「動作確認」に記載の手動・開発環境での確認とする。
+
+CIが使う `package.json`（playwright）はCI/開発テスト専用であり、ツール本体の実行・配布には不要である。ビルド工程（bundler等）はCIにも導入していない。
 
 ## ドキュメント
 

@@ -1,0 +1,62 @@
+name: CI
+
+# 本体（idontlovepdf）が静的Webアプリとしての構成を壊していないことを確認する
+# 最小限のCI。engine（idontlovepdf-engine）内部のPDF処理テストはここでは
+# 行わない。それはengine repository自身のCIの責務であり、責務を重複させない。
+#
+# ここで確認するのは次の3点だけ:
+#   1. vendor/ に同梱したengine bundle・編集用フォントが正しいこと（SHA-256一致等）
+#   2. 静的ファイル一式が揃っており、runtimeのHTML/CSS/JSに外部依存が無いこと
+#   3. 本体UIが最低限ブラウザで起動すること（browser smoke test）
+#
+# npm（package.json・playwright）はこのCI/開発テストでのみ使う。ツール本体の
+# 実行・配布（GitHub Pages・IIS等への静的配置）にnpmやNode.jsは不要である
+# （README.md参照）。ビルド工程（bundler等）はここでも導入しない。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同じブランチ・PRへの新しいpushで、古い実行を打ち切る。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vendor-and-static:
+    name: vendor整合性・静的構成
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: vendor/ の整合性を確認（engine bundle・編集用フォントのSHA-256等）
+        run: node scripts/ci/check-vendor-integrity.mjs
+
+      - name: 静的ファイル構成を確認（必須ファイル・構文チェック・外部URL不在）
+        run: node scripts/ci/check-static-structure.mjs
+
+  browser-smoke:
+    name: browser smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: CI/開発テスト専用の依存関係をインストール（Playwright）
+        run: npm install
+
+      - name: Playwright Chromiumをインストール
+        run: npx playwright install --with-deps chromium
+
+      - name: 本体UIの最小browser smoke testを実行
+        run: node scripts/ci/browser-smoke.mjs

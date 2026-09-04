@@ -12,7 +12,10 @@
 //     run の連結・continuityの判断・PDF描画命令の解釈を本体側で行わない。
 //     置換できるかどうかを、文字数・font・PDF内部構造から本体側で推測しない。
 //   - 元のPDFのフォントに無い文字は、engineへ渡した編集用フォント（fallback font）
-//     で置き換えられる。どちらのフォントを使うかの判断はengineへ委ねる。
+//     で置き換えられる。編集用フォントは BIZ UDゴシック・BIZ UD明朝の2種類を
+//     engineへ setFallbackFonts({ sans, serif }) で渡す。元PDFのFontDescriptorから
+//     どちらを使うかを判断するのはengineであり、本体側では判断・解析しない
+//     （/FontDescriptor・/Flags・font名・resource名等を本体側で読まない）。
 //   - 編集用フォントはリポジトリへ同梱したローカルファイルだけを使う。
 //     実行時に外部（Google Fonts、GitHub等）から取得しない。
 //   - engineのversionはbundleがexportする ENGINE_VERSION から取得し、
@@ -108,8 +111,8 @@ function setState(name) {
 // checkTextMatchReplacement() が判断する。
 function updateControls() {
   const busy = uiState === "busy";
-  // 編集用フォントを読み込めていない間・読み込めなかった場合はPDFを受け付けない。
-  const ready = fallbackFontBytes !== null;
+  // 編集用フォント（2種類とも）を読み込めていない間・読み込めなかった場合はPDFを受け付けない。
+  const ready = fallbackFonts !== null;
   elements.fileInput.disabled = busy || !ready;
   elements.searchInput.disabled = busy;
   elements.replaceInput.disabled = busy;
@@ -160,7 +163,7 @@ const ERROR_KINDS = {
   },
   "font-load-failed": {
     title: "編集用フォントを読み込めませんでした",
-    lead: "編集用フォントを読み込めませんでした。配置を確認してください。vendor/fonts/BIZUDGothic-Regular.ttf がサーバーへ配置され、配信できる状態かを情報担当へご確認ください。"
+    lead: "編集用フォントを読み込めませんでした。配置を確認してください。vendor/fonts/BIZUDGothic-Regular.ttf と vendor/fonts/BIZUDMincho-Regular.ttf の両方がサーバーへ配置され、配信できる状態かを情報担当へご確認ください。"
   },
   "modify-denied": {
     title: "このPDFは編集結果を保存できません",
@@ -343,46 +346,79 @@ function showChangeCount() {
 /* -------------------------------------------------------- 編集用フォント */
 
 // PDFのフォントに無い文字を書くために、engineへ渡す編集用フォント（fallback font）。
+// BIZ UDゴシック（sans）と BIZ UD明朝（serif）の2種類を渡し、元PDFのFontDescriptor
+// から実際にどちらを使うかは setFallbackFonts() を通じてengineが判断する。
+// 本体側はSerif/Sansの判定を行わない（判定に使うAPIも公開されていない）。
 //
-// リポジトリへ同梱したローカルファイルだけを使う。相対URLで自分自身（このmodule）の
-// 位置から解決するため、要求先は必ず本ツールと同一originになる。外部URLは使わない。
-// 取得は起動時の1回だけで、以降はこのバイト列を使い回す。
+// いずれもリポジトリへ同梱したローカルファイルだけを使う。相対URLで自分自身
+// （このmodule）の位置から解決するため、要求先は必ず本ツールと同一originになる。
+// 外部URLは使わない。取得は起動時の1回だけで、以降はこのバイト列を使い回す
+// （PDFごとの再fetchはしない）。
 //
 // 取得できたことと、engineが読めるフォントであることは別である。配信設定によっては
-// HTML等が200で返ることもあるため、実際に使えるかは engine の setFallbackFont() で
+// HTML等が200で返ることもあるため、実際に使えるかは engine の setFallbackFonts() で
 // 確かめる（PDFを開いた時点で確認し、通らなければ編集画面を開かない）。
-const FALLBACK_FONT_PATH = "../vendor/fonts/BIZUDGothic-Regular.ttf";
+//
+// どちらか一方でも取得・検証に失敗した場合、黙ってもう一方だけの1font構成へ
+// 縮退させない。両方読み込めた場合だけ編集画面へ進む（fail closed）。
+const GOTHIC_FONT_PATH = "../vendor/fonts/BIZUDGothic-Regular.ttf";
+const MINCHO_FONT_PATH = "../vendor/fonts/BIZUDMincho-Regular.ttf";
 
-let fallbackFontBytes = null;
+let fallbackFonts = null; // { sans: Uint8Array, serif: Uint8Array }
 
-async function loadFallbackFont() {
-  const url = new URL(FALLBACK_FONT_PATH, import.meta.url);
+async function fetchFontBytes(path) {
+  const url = new URL(path, import.meta.url);
   // フォントを差し替えたときに古いキャッシュを使い続けないよう、毎回サーバーへ
   // 確認させる（変更が無ければ 304 で本文は転送されない）。
   const response = await fetch(url, { cache: "no-cache" });
   if (!response.ok) {
-    throw new Error(`Failed to fetch the editing font (${FALLBACK_FONT_PATH}): HTTP ${response.status} ${response.statusText}`);
+    throw new Error(`Failed to fetch the editing font (${path}): HTTP ${response.status} ${response.statusText}`);
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length === 0) {
-    throw new Error(`The editing font file is empty (${FALLBACK_FONT_PATH})`);
+    throw new Error(`The editing font file is empty (${path})`);
   }
   return bytes;
 }
 
-// 置換に使うeditorへ、必ず編集用フォントを渡してから置換を行う。
-// どのフォントで書くか（元のフォントか編集用フォントか）はengineが決める。
-// 本体側でPDF内部のフォントを調べて判断しない。
-async function withFallbackFont(target) {
-  if (!fallbackFontBytes) {
+// 2つの編集用フォントを両方取得する。片方だけ失敗した場合も、もう片方だけで
+// 起動を続けない。両方の失敗理由を開発者向け詳細へ残すため、個別に結果を待つ。
+async function loadFallbackFonts() {
+  const [sansResult, serifResult] = await Promise.allSettled([
+    fetchFontBytes(GOTHIC_FONT_PATH),
+    fetchFontBytes(MINCHO_FONT_PATH)
+  ]);
+
+  const failures = [];
+  if (sansResult.status === "rejected") {
+    failures.push(`BIZ UDGothic (${GOTHIC_FONT_PATH}): ${errorMessage(sansResult.reason)}`);
+  }
+  if (serifResult.status === "rejected") {
+    failures.push(`BIZ UDMincho (${MINCHO_FONT_PATH}): ${errorMessage(serifResult.reason)}`);
+  }
+  if (failures.length > 0) {
+    throw new Error(`Failed to load the editing fonts:\n${failures.join("\n")}`);
+  }
+
+  return { sans: sansResult.value, serif: serifResult.value };
+}
+
+// 置換に使うeditorへ、必ず編集用フォント2種類を渡してから置換を行う。
+// 元のフォントで書けるか、編集用フォントのどちらを使うかはengineが決める。
+// 本体側でPDF内部のフォント（FontDescriptor・Flags・font名等）を調べて判断しない。
+async function withFallbackFonts(target) {
+  if (!fallbackFonts) {
     // 起動時に読み込めていればここへは来ない（読み込めなければPDF自体を受け付けない）。
     // 念のため、engineへ渡さずに編集用フォントのエラーとして扱う。
-    const error = new Error("The editing font is not loaded; the tool must not edit a PDF without it");
+    const error = new Error("The editing fonts are not loaded; the tool must not edit a PDF without them");
     error.code = "FONT_NOT_LOADED";
     throw error;
   }
-  await target.setFallbackFont(fallbackFontBytes);
-  elements.debugFont.textContent = `BIZ UDGothic Regular（${counter(fallbackFontBytes.length)} bytes・engineで読み込み確認済み）`;
+  await target.setFallbackFonts({ sans: fallbackFonts.sans, serif: fallbackFonts.serif });
+  elements.debugFont.textContent =
+    `BIZ UDGothic Regular（${counter(fallbackFonts.sans.length)} bytes）/ `
+    + `BIZ UDMincho Regular（${counter(fallbackFonts.serif.length)} bytes）・`
+    + `engineで読み込み確認済み（Serif/Sansの選択はengine内部）`;
   return target;
 }
 
@@ -493,16 +529,16 @@ async function loadFile(file) {
   try {
     editor = new PdfTextEditor(currentBytes);
 
-    // 編集用フォントを engine が実際に読めることを、編集画面を開く前に確かめる。
-    // ここを通らないまま検索・置換の画面を出すと、置換しようとして初めて
-    // フォントの異常が分かることになる。
-    await withFallbackFont(editor);
+    // 編集用フォント（BIZ UDゴシック・BIZ UD明朝の両方）を engine が実際に読める
+    // ことを、編集画面を開く前に確かめる。ここを通らないまま検索・置換の画面を出すと、
+    // 置換しようとして初めてフォントの異常が分かることになる。
+    await withFallbackFonts(editor);
   } catch (error) {
     const kind = classifyError(error);
     if (kind === "font-load-failed") {
       // フォントそのものが使えない。どのPDFでも同じ結果になるため、
       // 起動時に読み込めなかった場合と同じく、PDFの受け付けを止める。
-      fallbackFontBytes = null;
+      fallbackFonts = null;
       elements.debugFont.textContent = "✗ フォントとして読めない";
     }
     showLoadFailure(kind);
@@ -832,11 +868,11 @@ async function replaceSelected() {
     // match ID は、それを発行したeditorだけで有効である。
     // 一時editorでは同じ検索文字で検索し直し、同じ順番の結果を取り直す。
     //
-    // 置換に使うeditorには、置換の前に必ず編集用フォントを渡す。
-    // 元のPDFのフォントで書けるかどうかの判断も、編集用フォントを使うかどうかの
-    // 判断も、engine側が行う。
+    // 置換に使うeditorには、置換の前に必ず編集用フォント2種類を渡す。
+    // 元のPDFのフォントで書けるかどうかの判断も、編集用フォントのうちどちらを
+    // 使うかの判断も、engine側が行う。
     const temporary = new PdfTextEditor(currentBytes);
-    await withFallbackFont(temporary);
+    await withFallbackFonts(temporary);
     const temporaryMatches = await temporary.searchText(query);
 
     // 並びや内容が変わっていたら、取り違えを避けて中止する。
@@ -1083,22 +1119,25 @@ renderChangeLog();
 // index.html 側の起動失敗表示を取り消す（moduleがここまで到達できた＝読み込み成功）。
 window.__idontlovepdfReady = true;
 
-// 編集用フォントは起動時に一度だけ読み込む。
+// 編集用フォント（BIZ UDゴシック・BIZ UD明朝）は起動時に一度だけ読み込む。
 //
-// 読み込めなかった場合、fallbackなしで通常起動したように見せない。
-// 代わりのフォントを外部から取りに行くこともしない。原因が分かる案内を出し、
-// PDFの受け付けを止める（配置を直してページを再読み込みしてもらう）。
+// どちらか一方でも読み込めなかった場合、もう一方だけのfallbackで通常起動した
+// ように見せない。代わりのフォントを外部から取りに行くこともしない。原因が
+// 分かる案内を出し、PDFの受け付けを止める（配置を直してページを再読み込みしてもらう）。
 async function start() {
   setState("busy");
   try {
-    fallbackFontBytes = await loadFallbackFont();
+    fallbackFonts = await loadFallbackFonts();
   } catch (error) {
     elements.debugFont.textContent = "✗ 読み込み失敗";
     showError("font-load-failed", error);
     setState("ng");
     return;
   }
-  elements.debugFont.textContent = `${counter(fallbackFontBytes.length)} bytes 取得（フォントとして読めるかはPDFを開いた時点で確認する）`;
+  elements.debugFont.textContent =
+    `BIZ UDGothic Regular（${counter(fallbackFonts.sans.length)} bytes）/ `
+    + `BIZ UDMincho Regular（${counter(fallbackFonts.serif.length)} bytes）取得`
+    + `（フォントとして読めるかはPDFを開いた時点で確認する）`;
   setState("idle");
   window.__idontlovepdfFontReady = true;
 }

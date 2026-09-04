@@ -1,0 +1,14 @@
+{
+  "name": "idontlovepdf",
+  "private": true,
+  "version": "0.5.0",
+  "description": "CI/開発テスト専用のpackage.json。ツール本体の実行・配布にnpmは不要（README.md参照）。",
+  "scripts": {
+    "test:vendor": "node scripts/ci/check-vendor-integrity.mjs",
+    "test:static": "node scripts/ci/check-static-structure.mjs",
+    "test:browser": "node scripts/ci/browser-smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

@@ -35,7 +35,7 @@
 
 取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77`）。取り込んだのはRelease assetの `idontlovepdf-engine.js` 1ファイルのみであり、`idontlovepdf-engine` の `src/` はコピーしていない。bundleは手修正していない。
 
-このRelease（v0.5.0）は、PR #30で実装した「PDF自身の`FontDescriptor`/`Flags`によるSerif/Sans判定と、`setFallbackFonts({ sans, serif })` によるfallback font自動選択」を、`idontlovepdf-engine` 側のRelease workflow（`main`をcheckoutし、test/buildを経てtag・Releaseを作成）で正式にReleaseしたものである。engine側のREADMEはこの機能を「PoC」と位置づけているが、これはfont自動選択の対応範囲（Serif/Sansの2系統のみで、太字・斜体・weight・stretch等には未対応）を指すものであり、Release自体が非公式・未完成であることを意味しない。Release自体は非draft・非prereleaseの正式なGitHub Releaseであり、`ENGINE_VERSION === "0.5.0"`、`setFallbackFonts()` のexportを確認したうえで取り込んでいる。
+このRelease（v0.5.1）は、v0.5.0で導入された「PDF自身の`FontDescriptor`/`Flags`によるSerif/Sans判定と、`setFallbackFonts({ sans, serif })` によるfallback font自動選択」を基礎とし、`/FontDescriptor`がinline dictionaryとして書かれている場合にも到達できるよう修正したものを、`idontlovepdf-engine` 側のRelease workflow（`main`をcheckoutし、test/buildを経てtag・Releaseを作成）で正式にReleaseしたものである。engine側のREADMEはSerif/Sans自動選択の機能自体を「PoC」と位置づけているが、これは対応範囲（Serif/Sansの2系統のみで、太字・斜体・weight・stretch等には未対応）を指すものであり、Release自体が非公式・未完成であることを意味しない。Release自体は非draft・非prereleaseの正式なGitHub Releaseであり、`ENGINE_VERSION === "0.5.1"`、`setFallbackFonts()` のexportを確認したうえで取り込んでいる。
 
 ### 取り扱いの原則
 

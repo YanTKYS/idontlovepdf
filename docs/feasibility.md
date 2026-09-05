@@ -7,8 +7,8 @@
 - 現在の第一候補: `idontlovepdf-engine`（自作PDF処理エンジン）
 - 商用Web PDF SDK: 自作engineが要求水準へ届かなかった場合の代替候補
 - 運用可否: 未判定（一般職員による安定運用は未検証）
-- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.5.0） / 元PDFの書体（Serif/Sans）に応じた編集用フォントの自動選択に対応（合成PDFで確認、`22550.pdf` での再確認は未実施） / 本体CI（`.github/workflows/ci.yml`）追加済み / 本番実装未着手
-- 最終更新: 2026-09-04
+- フェーズ: 調査完了 / 自作engine技術検証済み / エンジン統合確認済み / 検索・置換・保存・プレビュー・元PDFのフォントに無い文字への置換まで到達した試作版あり（本ツール v0.5.1） / 元PDFの書体（Serif/Sans）に応じた編集用フォントの自動選択に対応（`22550.pdf` のinline `/FontDescriptor` にも到達できるようv0.5.1で修正。`22550.pdf` の実構造を再現した合成PDFで確認。`22550.pdf` そのものを本体UIで開いての再確認は未実施） / 本体CI（`.github/workflows/ci.yml`）追加済み / 本番実装未着手
+- 最終更新: 2026-09-05
 
 ---
 
@@ -1139,6 +1139,76 @@ engine v0.5.0の取り込みにより、明朝系PDFへのfallback置換だけ�
 
 **運用可否は引き続き「未判定」である。** `22550.pdf` でのv0.5.0再確認、および見た目比較の実PDFでの実施は、16章の未確認事項として残す。
 
+### 15.11 engine v0.5.1への更新、`22550.pdf` のinline `/FontDescriptor` 対応、実PDF診断結果の反映（本ツール v0.5.1）
+
+#### 背景（v0.5.0で残った問題）
+
+15.10（v0.5.0）の時点では、公開PDF `22550.pdf` そのものを開発環境から取得できなかったため、合成PDFでの確認にとどまっていた。その後、`idontlovepdf-engine` 側で `22550.pdf` を対象にした診断が進み、**v0.5.0が `22550.pdf` の `令和8年度` でBIZ UD明朝ではなくBIZ UDゴシックを選んでいたこと**が確認された。
+
+原因は、`idontlovepdf-engine` 側の調査記録（`docs/serif-classification-diagnosis.md`）により確定している。`22550.pdf` の `/F3` は、`/DescendantFonts` のCIDFont dictionaryをarray内に直接書くinline dictionary（v0.4.3で対応済み）であることに加え、そのCIDFont dictionary自身の `/FontDescriptor` も **inline dictionary** として書かれていた。v0.5.0の `classifyFontResource()` はこの構造を判定できず、`/FontDescriptor` が全く無い場合と区別できないまま `unknown`（→常にBIZ UDゴシック）へ落ちていた。**`/Flags` の値自体（Serif bit）に問題はなく、engineが `/FontDescriptor` へ到達できていなかっただけ**である。
+
+#### engine v0.5.1の取り込み
+
+`idontlovepdf-engine` の `v0.5.1` タグは、この原因を修正したものである。`src/font-classification.js` の `fontDescriptorOf()` に、`/FontDescriptor` をindirect referenceとinline dictionaryの両方から読む分岐が追加された。`/Flags` 自身の意味づけ（Serif bit判定）は変更されていない。新しいPDF parserは追加されていない。
+
+この機能を含む `v0.5.1` タグは、GitHub Releaseとして非draft・非prereleaseで公開されている。取り込み前に、Release asset `idontlovepdf-engine.js` のSHA-256が同Releaseの `.sha256`（`d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77` / 544,212 bytes）と一致すること、Node.jsでES Moduleとして実際に読み込めること、`ENGINE_VERSION === "0.5.1"` であることを確認したうえで `vendor/idontlovepdf-engine.js` を差し替えた。engineの `src/` はコピーしていない。bundleは手修正していない。本体側から見える公開API（`PdfTextEditor`・`setFallbackFonts({ sans, serif })`・`checkTextMatchReplacement()`・`replaceTextMatch()`・`save()`）は変わっていない。`js/app.js` のPDF処理ロジックは変更していない。
+
+#### `idontlovepdf-engine` 側のGitHub Actions実PDF診断結果（`22550.pdf` 本体）
+
+`idontlovepdf-engine` の `Diagnose real PDF font metrics` workflow（GitHub-hosted runner。このrunnerは `www.city.itoman.lg.jp` へ到達できる）で、`22550.pdf` の `/F3` を実際に診断した結果は次のとおり（`idontlovepdf-engine` 側 `docs/serif-classification-diagnosis.md` に記録）。
+
+```text
+sourceFontResource: /F3
+subtype: /CIDFontType2
+descendantFonts: inline dictionary, no object of its own
+fontDescriptor:
+  form: inline
+  fontName: /CIDFont+F3
+flags:
+  value: 6
+  serifBit: true
+classification: serif
+classificationReason: serif-flag-set
+```
+
+`令和 → しょ` の編集smoke testでは、`diagnoseFallbackFontSelection()` が `selectedRole: "serif"` を返し、`checkTextMatchReplacement()` → `replaceTextMatch()` → `save()` が成功、保存後PDFに実際に埋め込まれたfallback fontの `/BaseFont` は `BIZUDMincho-Regular`（`BIZUDGothic` は埋め込まれない）、保存後 4,562,587 bytes（元615,690 bytes、+3,946,897 bytes）、reopen後 `しょ` 1件・`令和` 33件、後続テキスト（`8年度 糸満市放...`）の描画位置はpdfminer.six（engineと無関係な実装）でdx=dy=0.0000（変化なし）、`qpdf --check` は置換前後ともexit code 0、置換後PDFはChromium本体のPDFビューア（Playwright経由）でpage error 0件、と記録されている。`令和 → 平成`（既存font経路、mode `same-length`）も成功し、fallback fontは埋め込まれない。`令和 → しょうわ`は、BIZ UD明朝自身の実glyph幅で再判定した結果 `allowed: false`（`code: FALLBACK_LAYOUT_UNSUPPORTED`、`unsafeReason: fallback-replacement-overflows-slot`、`diagnostics: { replacementAdvance: 4000, availableAdvance: 2250 }`）として拒否され、documentは変更されなかった。
+
+#### 本体（`idontlovepdf`）側での確認
+
+**開発用サンドボックス環境からは、今回も `www.city.itoman.lg.jp` へ到達できない**（`curl` で `CONNECT tunnel failed, response 403` / HTTP 403。v0.4.2以降、毎回同じegress制約が再現している）。したがって、`idontlovepdf-engine` 側のGitHub Actions（GitHub-hosted runner）とは異なり、本リポジトリの環境から `22550.pdf` そのものを本体UIで開いての確認はできなかった。
+
+代わりに、`22550.pdf` の `/F3` の実構造（Type0 → inline `/DescendantFonts` dictionary → inline `/FontDescriptor`、`/Flags 6`）を、`idontlovepdf-engine` 自身のtest helper（`test/helpers/document-font-inline-descriptor.js` に実装されている構成そのもの。本体側へコピーはしていない。合成PDFを作る使い捨てスクリプト内で参照しただけであり、PDF内部構造を読む処理をengine・本体いずれのソースへも追加していない）と同じ形で再現した合成PDFを作り、「令和8年度」を `TJ` 配列＋続く `Tj` で描く配置（`22550.pdf` の実際の描画と同じ構成）とした。この合成PDFに対し、実際に同梱した engine v0.5.1 bundle・実際の BIZ UDGothic / BIZ UD明朝 フォントファイルを使い、静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）で、本体UI（`index.html` → PDF選択 → 検索 → 置換 → 保存 → 再open）を通して確認した。
+
+| 操作 | 結果 |
+|---|---|
+| 合成PDF（`/Flags 6`）を選択 | 成功。「Engine」欄に v0.5.1、2件のテキストを認識 |
+| 「令和」を検索 | 1件見つかりました |
+| 検索結果を選択し、「しょ」を入力して置換 | 成功。`checkTextMatchReplacement()` が `allowed: true` / mode `fallback-font` を返し、`replaceTextMatch()` が成功。編集中プレビューへ自動的に切り替わり、変更1件が記録される |
+| 保存後PDFのバイト列確認 | 埋め込まれたfallback fontの `/BaseFont` は `BIZUDMincho-Regular`（`BIZUDGothic` は含まれない） |
+| 保存サイズ | 1,917 → 3,948,205 bytes（+3,946,288 bytes）。`idontlovepdf-engine` 側の実PDF結果（615,690 → 4,562,587 bytes、+3,946,897 bytes）とほぼ同じ増加量であり、BIZ UD明朝フォントプログラム全体の埋め込みによるものである |
+| 保存 → 再open → 「しょ」検索・「令和」検索 | 保存成功。再open成功。「しょ」1件、「令和」0件（この合成PDFは出現1件のみのため） |
+| 保存後PDFの構造検証 | `qpdf --check` でエラーなし |
+| 保存後PDFがincremental updateであること | 元PDFのバイト列がそのまま先頭に残っていることをバイト比較で確認 |
+| **見た目（独立レンダラによる確認）** | 保存後PDFを、本体・engineとは無関係な独立実装（PyMuPDF/MuPDF。FreeTypeで実際のglyph outlineをrasterize）でレンダリングし、「しょ」がBIZ UD明朝の字形（ストローク終端の払い等、明朝系の特徴）で描画されていることを画像で確認した。比較用に、engineがSans判定する合成PDF（`/Flags 32`）で同じ操作を行いBIZ UDGothicを埋め込んだ場合の画像とも並べ、字形が明確に異なることを確認した |
+| 別インスタンスで「令和 → 平成」（既存font経路） | 成功。`allowed: true` / mode `single-run`。fallback fontは埋め込まれない。保存サイズ 1,917 → 2,121 bytes（+204 bytes）。保存後PDFで「平成」検索1件、`qpdf --check` エラーなし |
+| 別インスタンスで「令和 → しょうわ」 | 拒否。`allowed: false` / `code: FALLBACK_LAYOUT_UNSUPPORTED` / `unsafeReason: fallback-replacement-overflows-slot` / `diagnostics: { replacementAdvance: 4000, availableAdvance: 2000 }`。画面表示は「この箇所は置き換えられません」のみで、PDF内部用語は出ない。変更件数・変更履歴・保存ボタンの状態・プレビュー表示は変化せず、`replaceTextMatch()` を呼んでいないためPDFは1バイトも変わらない（バイト比較で確認） |
+| 拒否後の継続操作 | 同じ検索結果から「令和 → 平成」へ続けて置換すると通常どおり成功する |
+| 外部通信 | 実行中、同一origin以外への要求は0件。console error・uncaught errorも0件 |
+
+**Chromium headlessでのPDFプレビュー確認について**: 本体プレビュー用iframe（`#preview-viewer`）のスクリーンショットはタイムアウトし、要素が実際には表示されない状態だった（画面上は「このブラウザではPDFプレビューを表示できません」というフォールバック表示になっていた）。トップレベルのPDF navigationも、v0.4.4時点の記録（15.9）と同様、Playwrightのheadless Chromiumでは常にdownload扱いになった。これはこのツール・engineの不具合ではなく、headless Chromiumの既知の制約である。そのため見た目の確認は、上表のとおり独立したPDFレンダラ（PyMuPDF/MuPDF）による画像化で行った。
+
+#### 判定への影響
+
+この確認により、**v0.5.0で `22550.pdf` に対して発生していた「令和 → しょ」のBIZ UDゴシックへの誤フォールバックが、v0.5.1で修正されたことを、`22550.pdf` の実構造を再現した合成PDF・本体UI・実engine bundle・実フォント・独立レンダラの組み合わせで確認した。** `22550.pdf` 本体そのものでの同じ結果は、`idontlovepdf-engine` 側のGitHub Actions実PDF検証（GitHub-hosted runner）で確認済みである。
+
+一方で、この確認は次を意味しない。
+
+- `22550.pdf` そのものを本リポジトリの環境（本体UI・Chromium）で開いての確認
+- 任意のPDFを編集可能であること、あらゆる明朝系PDFを正確に判定できること
+- 一般職員向けに運用可能であること
+
+**運用可否は引き続き「未判定」である。** `22550.pdf` そのものを本体UIで開いての確認、配布元へ到達できる環境での実ブラウザ目視確認、font subsetting（今回のPRでは対象外。次のengine側独立PoC候補）は、引き続き未確認事項として残す。
+
 ---
 
 ## 16. 現在の未確認事項
@@ -1154,7 +1224,7 @@ engine v0.5.0の取り込みにより、明朝系PDFへのfallback置換だけ�
 
 ### 16.2 編集品質
 
-- 編集用フォント（v0.5.0からはSerif判定でBIZ UD明朝、Sans・判定不能でBIZ UDGothic）で書いた文字と、元のフォントの文字が並んだときの見え方（書体の差）。v0.5.0の合成PDFでの目視確認（15.10）では違和感の低減を確認したが、実PDFでの確認は未実施
+- 編集用フォント（v0.5.0からはSerif判定でBIZ UD明朝、Sans・判定不能でBIZ UDGothic）で書いた文字と、元のフォントの文字が並んだときの見え方（書体の差）。v0.5.1では `22550.pdf` の実構造を再現した合成PDF・独立レンダラ（PyMuPDF/MuPDF）による目視確認（15.11）を行ったが、`22550.pdf` そのもの・利用者が実際に使うブラウザのPDFビューアでの確認は未実施
 - 編集用フォントを使う置換で、v0.4.4 の事前拒否（15.9）によりどの程度の割合の置換が断られるか。断られた箇所の実務上の頻度・許容度は未調査。この判定基準はv0.5.0でも変更していない（15.10）
 - 元のフォントに無い文字への置換をengineが断る箇所が、実業務PDFでどの程度現れるか（v0.4.1 / v0.4.2 で対象は広がったが、断られる箇所は残る）
 - 編集後PDFの印刷結果
@@ -1199,6 +1269,8 @@ engine v0.5.0の取り込みにより、明朝系PDFへのfallback置換だけ�
 - [x] フォントの幅情報がindirect objectで書かれたPDFで、fallback font置換の可否がengine側だけで判断され、断られた場合も編集状態が変化しない（15.7）
 - [x] 公開PDF `22550.pdf` での「令和」→「しょ」が本体UIから成立し、後続文字の位置が独立実装との比較で一致する（15.8）
 - [x] 公開PDF `22550.pdf` での「令和」→「しょうわ」（置換文字列が後続文字と重なる箇所）が、PDFを変更する前に本体UIから拒否され、変更件数・変更履歴・プレビューが変化しない（15.9）
+- [x] `22550.pdf` の `/F3` と同じ構造（inline `/FontDescriptor`、`/Flags 6`）を再現した合成PDFで、「令和」→「しょ」がSerif判定・BIZ UD明朝の埋め込みとして成立し、独立レンダラ（PyMuPDF/MuPDF）で実際に明朝系の字形として描画されることを確認した（15.11）
+- [ ] `22550.pdf` そのものを本リポジトリの環境（本体UI・Chromium）で開いての確認。`idontlovepdf-engine` 側のGitHub Actions実PDF検証（GitHub-hosted runner）では確認済み（15.11）
 - [ ] 利用者環境の実業務PDF（`2024_subsidy_koubo_outline.pdf` 等）での検索・置換
 - [ ] IISが `.ttf` を配信でき、編集用フォントを読み込めること
 - [ ] GitHub Pages上で `vendor/idontlovepdf-engine.js` がES Moduleとして読み込める（MIME type・相対path・`.nojekyll` の効き）
@@ -1296,3 +1368,4 @@ engineのデバッグ用画面（text run一覧、object番号等）を、その
 | 2026-09-03 | engine v0.4.3 の正式Releaseを取り込み（本ツール v0.4.3）。Release assetのSHA-256を `.sha256` およびGitHub Release記載の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`8872f51f5c8718185350bd9a7372adefce9506c6e8b13d7f0f5ac800af82cfde` / 531,745 bytes）。v0.4.3 は `/DescendantFonts` がinline dictionaryとして書かれたCIDFontへの対応を追加し、公開PDF `22550.pdf` の `/F3` で v0.4.2 まで `FALLBACK_FONT_METRICS_UNAVAILABLE` により拒否されていた「令和 → しょ」が、**本体UIから初めて成立した**ことを 15.8 として記録した。利用者から提供を受けたPDFで、静的HTTPサーバー配信 + Chromium（Playwrightによる自動操作）により、検索 → 検索結果の選択 → 置換 → 編集中プレビュー → 保存 → 再open → 再検索まで、本体の既存フロー・既存API（`searchText()` / `checkTextMatchReplacement()` / `replaceTextMatch()` / `save()`）だけで確認した。後続文字「8年度」の描画位置は、独立実装（pdfminer.six）でのグリフ座標比較により置換前後で完全一致（差 0.000pt）することを確認し、保存したPDFはqpdfの構造検証と、本ツールのiframeとは別の独立したページ表示によるChromium本体のPDFビューアでの目視確認の両方を通過した。同じPDFでの「令和 → 平成」（既存font経路、mode `same-length`）も別インスタンスで回帰確認した。本体側はPDF内部構造（`/DescendantFonts`・CIDFont等）を読む処理を追加していない。PDFはリポジトリへコミットも、fixtureとしての保存もしていない。**この確認は「対応可能な実PDFの範囲が広がった」ことを示すものであり、任意のPDFの編集・一般職員向け運用が可能になったことを意味しない。運用可否は引き続き「未判定」である。** |
 | 2026-09-04 | engine v0.4.4 の正式Releaseを取り込み（本ツール v0.4.4）。Release assetのSHA-256を `.sha256` の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`3c3c3236f1e48f144ef22ac74aa7323e84d88452cc43f4f9de701dfaf23fc3d4` / 533,195 bytes）。v0.4.4 は、`TJ` fallbackのadjustment計算が「後続文字の開始位置を維持すること」しか保証せず「置換文字列自身がその位置まで描画されないこと」を保証していなかった不具合を修正し、置換前に `availableAdvance` と `replacementAdvance` を比較して安全に配置できない場合は拒否するようになった（`code: FALLBACK_LAYOUT_UNSUPPORTED`、`unsafeReason: fallback-replacement-overflows-slot` / `fallback-replacement-slot-unknown`）。公開PDF `22550.pdf` で、v0.4.3 まで成功例として記録していた「令和 → しょうわ」が実際には置換後の「わ」と後続の「8」が重なるPDFを作っていたことを確認したうえで、v0.4.4 ではこれが `checkTextMatchReplacement()` の時点で `allowed: false` となり、PDFを変更する前に拒否されることを本体UIから確認し、15.9 として記録した。同じPDFでの「令和 → しょ」（fallback font経路）・「令和 → 平成」（既存font経路）は引き続き成功し、拒否のあとも別の置換を通常どおり続行できることを確認した。本体側は `availableAdvance` / `replacementAdvance` の計算やTJ adjustmentの解析を追加しておらず、変更は開発者向け詳細欄へ `diagnostics` を1行追加したのみである。編集用フォント（BIZ UDGothic Regular 1.05）は据え置き。技術的実現性「あり」と運用可否「未判定」は変更していない。 |
 | 2026-09-04 | engine v0.5.0 の正式Releaseを取り込み、BIZ UD明朝を追加同梱し、本体を `setFallbackFonts({ sans, serif })` へ移行した（本ツール v0.5.0）。Release assetのSHA-256を `.sha256` の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895` / 541,649 bytes）。engineが元PDFのFontDescriptor `/Flags` からSerif/Sans/Unknownを判定し、Serifと判定された場合にBIZ UD明朝（新規同梱。Regular 1.06、SHA-256 `468ee6d9b149ca144809e03841bf18740ecf014e055a00da6ecaf1aaf4165af2`）、Sans・判定不能の場合にBIZ UDGothic（据え置き）が使われるようになった。本体側はこの判定を一切行わず、`/FontDescriptor`・`/Flags`・font名を読む処理は追加していない。2フォントは起動時に一度だけ取得し、どちらか一方でも読み込めない場合は黙って1font構成へ縮退させず、PDFの受け付けを止める。v0.4.4までの置換フロー・安全判定は変更していない。**公開PDF `22550.pdf` は今回も開発環境から取得できず（egress proxyの制約が継続）、代わりに `idontlovepdf-engine` 自身のテストが再現に使う構成（`TJ` + 続く`Tj`）を模した合成PDFで、実際の engine v0.5.0 bundle・実際の2フォントを用いて「令和 → 平成」「令和 → しょ」（Serif→Mincho / Sans→Gothicの選択を保存後PDFのバイト列で確認）「令和 → しょうわ」（引き続き事前拒否）を本体UI経由で確認し、15.10 として記録した。** あわせて、本体リポジトリに存在しなかった `.github/workflows/ci.yml` を追加し、vendor整合性（SHA-256一致・`ENGINE_VERSION`確認）・静的構成（必須ファイル・構文・外部URL不在）・browser smoke testをPRごとに自動確認できるようにした（`vendor/manifest.json` を新規追加し期待値を1か所で管理）。CIが使う `package.json`（playwright）はCI/開発テスト専用で、ツール本体の実行・配布にnpm・Node.jsは不要である。技術的実現性「あり」と運用可否「未判定」は変更していない。`22550.pdf` でのv0.5.0再確認と、実PDFでの見た目比較は未確認事項として残る。 |
+| 2026-09-05 | engine v0.5.1 の正式Releaseを取り込んだ（本ツール v0.5.1）。Release assetのSHA-256を `.sha256` の値と照合したうえで `vendor/idontlovepdf-engine.js` を差し替えた（`d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77` / 544,212 bytes）。v0.5.1は、**v0.5.0が公開PDF `22550.pdf` の `令和8年度` でBIZ UD明朝ではなくBIZ UDゴシックを選んでいた原因**を修正したもので、原因は `/F3` の `/FontDescriptor` がinline dictionaryとして書かれており（`/Flags` の値自体は `6`＝Serif bit trueで問題なかった）、v0.5.0の実装がそこへ到達できていなかったことにあった（詳細は15.11）。`idontlovepdf-engine` 側のGitHub Actions実PDF検証（GitHub-hosted runner。`22550.pdf` 本体を使用）では、修正後に `serif` 判定・BIZ UD明朝の埋め込み・後続文字位置の維持・`令和 → 平成`（既存font経路）の回帰・`令和 → しょうわ`（BIZ UD明朝自身の実glyph幅での再判定）の事前拒否のすべてが確認されている。本体側は、この判定を一切行わず、`/FontDescriptor`・`/Flags`・Serif bit・CIDFont・font名による判定処理を一切追加していない。`js/app.js` は変更していない。開発用サンドボックス環境からは今回も `www.city.itoman.lg.jp` へ到達できず、`22550.pdf` の `/F3` と同じ構造（inline `/FontDescriptor`、`/Flags 6`）を再現した合成PDFで、実engine v0.5.1 bundle・実フォント・本体UIを通して確認した。保存後PDFを独立レンダラ（PyMuPDF/MuPDF）でレンダリングし、「しょ」が実際に明朝系の字形で描画されることを画像で確認し、Sans判定（BIZ UDGothic埋め込み）の場合と字形が異なることも確認した（15.11）。あわせて、`.github/workflows/ci.yml` のPlaywright依存取得を `npm install` から `npm ci` へ変更し（`package-lock.json` を使ったCI再現性の改善のみが目的）、`scripts/ci/browser-smoke.mjs` のengine version確認を、ハードコードした文字列から `vendor/manifest.json` を読む方式へ改めた。技術的実現性「あり」と運用可否「未判定」は変更していない。`22550.pdf` そのものを本体UIで開いての確認、font subsetting（次のengine側独立PoC候補）は、引き続き未確認・対象外として残る。 |

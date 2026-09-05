@@ -53,7 +53,7 @@ jobs:
           cache: npm
 
       - name: CI/開発テスト専用の依存関係をインストール（Playwright）
-        run: npm install
+        run: npm ci
 
       - name: Playwright Chromiumをインストール
         run: npx playwright install --with-deps chromium

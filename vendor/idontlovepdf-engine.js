@@ -14721,18 +14721,55 @@ async function fontDescriptorOf(fontDictionary, resolve) {
     const descendant = await resolveDescendantFont(fontDictionary, resolve);
     holder = descendant.dictionary ?? null;
   }
-  if (!holder) return null;
+  if (!holder) return { text: null, form: null, object: null, reason: "font-descriptor-missing" };
   const indirect = reference(holder, "FontDescriptor");
-  if (!indirect) return null;
-  const object = await tryResolve2(resolve, indirect);
-  return object?.dictionary ?? null;
+  if (indirect) {
+    const object = await tryResolve2(resolve, indirect);
+    if (!object?.dictionary) return { text: null, form: null, object: null, reason: "font-descriptor-unresolved" };
+    return { text: object.dictionary, form: "indirect", object: `${indirect.number} ${indirect.generation} R`, reason: null };
+  }
+  const inline = nestedDictionaryText(holder, "FontDescriptor");
+  if (inline) return { text: inline, form: "inline", object: null, reason: null };
+  return { text: null, form: null, object: null, reason: "font-descriptor-missing" };
 }
-async function classifyFontResource(fontDictionary, resolve) {
+var CLASSIFICATION_REASONS = Object.freeze([
+  /** Nowhere to look: no FontDescriptor reachable at all (absent key, or no descendant font). */
+  "font-descriptor-missing",
+  /** An indirect /FontDescriptor whose object could not be resolved. */
+  "font-descriptor-unresolved",
+  /** A FontDescriptor was reached, but it states no /Flags at all. */
+  "flags-missing",
+  /** A FontDescriptor was reached, but its indirect /Flags object could not be resolved. */
+  "flags-unresolved",
+  /** A FontDescriptor was reached, but /Flags is present and not a valid integer. */
+  "flags-invalid",
+  /** /Flags is present and a valid integer, but literally 0 -- nothing set, so nothing to read. */
+  "flags-zero",
+  /** /Flags resolved to a nonzero integer with the Serif bit (PDF Table 123, bit 2) set. */
+  "serif-flag-set",
+  /** /Flags resolved to a nonzero integer with the Serif bit not set. */
+  "serif-flag-not-set"
+]);
+async function classifyFontResourceDetailed(fontDictionary, resolve) {
   const descriptor = await fontDescriptorOf(fontDictionary, resolve);
-  if (!descriptor) return "unknown";
-  const flags = await resolvedNumber(descriptor, "Flags", resolve, { unresolved: "flags-unresolved", invalid: "flags-invalid" });
-  if (flags.reason || flags.value === null || flags.value === 0 || !Number.isInteger(flags.value)) return "unknown";
-  return (flags.value & FLAG_SERIF) !== 0 ? "serif" : "sans";
+  const fontDescriptor = { form: descriptor.form, object: descriptor.object, text: descriptor.text };
+  if (!descriptor.text) {
+    return { classification: "unknown", reason: descriptor.reason, fontDescriptor, flags: { value: null, serifBit: null } };
+  }
+  const flags = await resolvedNumber(descriptor.text, "Flags", resolve, { unresolved: "flags-unresolved", invalid: "flags-invalid" });
+  if (flags.reason) return { classification: "unknown", reason: flags.reason, fontDescriptor, flags: { value: null, serifBit: null } };
+  if (flags.value === null) return { classification: "unknown", reason: "flags-missing", fontDescriptor, flags: { value: null, serifBit: null } };
+  if (!Number.isInteger(flags.value)) {
+    return { classification: "unknown", reason: "flags-invalid", fontDescriptor, flags: { value: flags.value, serifBit: null } };
+  }
+  if (flags.value === 0) return { classification: "unknown", reason: "flags-zero", fontDescriptor, flags: { value: 0, serifBit: false } };
+  const serifBit = (flags.value & FLAG_SERIF) !== 0;
+  return {
+    classification: serifBit ? "serif" : "sans",
+    reason: serifBit ? "serif-flag-set" : "serif-flag-not-set",
+    fontDescriptor,
+    flags: { value: flags.value, serifBit }
+  };
 }
 
 // src/cmap.js
@@ -16913,11 +16950,14 @@ async function loadFontMaps(resources, structure, security) {
   const widths = /* @__PURE__ */ new Map();
   const widthReasons = /* @__PURE__ */ new Map();
   const classifications = /* @__PURE__ */ new Map();
+  const classificationDetails = /* @__PURE__ */ new Map();
   for (const [name, fontReference] of await fontReferences(resources, structure, security)) {
     const font = await structure.resolveObject(fontReference, security, decryptStreamBytes);
     const resolve = (target) => structure.resolveObject(target, security, decryptStreamBytes);
     modes.set(name, writingModeOf(font.dictionary, structure));
-    classifications.set(name, await classifyFontResource(font.dictionary, resolve));
+    const detail = await classifyFontResourceDetailed(font.dictionary, resolve);
+    classifications.set(name, detail.classification);
+    classificationDetails.set(name, detail);
     const { metrics, reason } = await describeFontWidths(font.dictionary, resolve);
     if (metrics) widths.set(name, metrics);
     else widthReasons.set(name, reason);
@@ -16926,7 +16966,7 @@ async function loadFontMaps(resources, structure, security) {
     const cmapObject = structure.object(toUnicode);
     result.set(name, parseToUnicodeCMap(await decodeStream(cmapObject, "ToUnicode stream", security)));
   }
-  return { maps: result, modes, widths, widthReasons, classifications };
+  return { maps: result, modes, widths, widthReasons, classifications, classificationDetails };
 }
 function ensureFallbackRoleAvailable(editor, role) {
   if (editor.fallbackEmbeddings.has(role)) {
@@ -17017,7 +17057,8 @@ var PdfTextEditor = class {
             fontModes: fonts.modes,
             fontWidths: fonts.widths,
             fontWidthReasons: fonts.widthReasons,
-            fontClassifications: fonts.classifications
+            fontClassifications: fonts.classifications,
+            fontClassificationDetails: fonts.classificationDetails
           });
         }
       }
@@ -17336,7 +17377,7 @@ ${xrefOffset}
 };
 
 // src/version.js
-var ENGINE_VERSION = "0.5.0";
+var ENGINE_VERSION = "0.5.1";
 export {
   ENGINE_VERSION,
   PdfTextEditor

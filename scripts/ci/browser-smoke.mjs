@@ -6,7 +6,7 @@
 //   - index.html がロードできる
 //   - JavaScriptのuncaught errorがない
 //   - engine bundleがロードできる
-//   - Engine欄にv0.5.0が表示される
+//   - Engine欄に vendor/manifest.json 記載のengine versionが表示される
 //   - Gothic fontのHTTP取得が成功する
 //   - Mincho fontのHTTP取得が成功する
 //   - font読み込み完了後にPDF選択UIが利用可能になる
@@ -72,6 +72,9 @@ function ok(message) {
   console.log(`✓ ${message}`);
 }
 
+const manifest = JSON.parse(await readFile(path.join(repoRoot, "vendor", "manifest.json"), "utf8"));
+const expectedEngineVersion = `v${manifest.engine.version}`;
+
 const server = await startServer();
 const { port } = server.address();
 const origin = `http://127.0.0.1:${port}`;
@@ -116,10 +119,10 @@ try {
     .catch(() => fail("編集用フォントの読み込み完了が確認できなかった（__idontlovepdfFontReady が立たない）"));
 
   const engineText = await page.locator("#debug-engine").textContent();
-  if (engineText.includes("v0.5.0")) {
-    ok(`Engine欄にv0.5.0が表示されている: "${engineText}"`);
+  if (engineText.includes(expectedEngineVersion)) {
+    ok(`Engine欄に${expectedEngineVersion}が表示されている: "${engineText}"`);
   } else {
-    fail(`Engine欄にv0.5.0が表示されていない: "${engineText}"`);
+    fail(`Engine欄に${expectedEngineVersion}が表示されていない: "${engineText}"`);
   }
 
   const fileInputDisabled = await page.locator("#pdf-input").isDisabled();

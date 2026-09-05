@@ -22,20 +22,20 @@
 | 項目 | 値 |
 |---|---|
 | library | idontlovepdf-engine |
-| version | v0.5.0 |
+| version | v0.5.1 |
 | asset | `idontlovepdf-engine.js` |
-| SHA-256 | `58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895` |
-| asset size | 541,649 bytes |
+| SHA-256 | `d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77` |
+| asset size | 544,212 bytes |
 | 更新元 | `YanTKYS/idontlovepdf-engine` の GitHub Release |
-| 取得日 | 2026-09-04 |
+| 取得日 | 2026-09-05 |
 
 取得元URL:
 
-- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.5.0>
+- <https://github.com/YanTKYS/idontlovepdf-engine/releases/tag/v0.5.1>
 
-取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895`）。取り込んだのはRelease assetの `idontlovepdf-engine.js` 1ファイルのみであり、`idontlovepdf-engine` の `src/` はコピーしていない。bundleは手修正していない。
+取り込み時、Release assetのSHA-256が同Releaseの `idontlovepdf-engine.js.sha256` の値と一致することを確認している（`d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77`）。取り込んだのはRelease assetの `idontlovepdf-engine.js` 1ファイルのみであり、`idontlovepdf-engine` の `src/` はコピーしていない。bundleは手修正していない。
 
-このRelease（v0.5.0）は、PR #30で実装した「PDF自身の`FontDescriptor`/`Flags`によるSerif/Sans判定と、`setFallbackFonts({ sans, serif })` によるfallback font自動選択」を、`idontlovepdf-engine` 側のRelease workflow（`main`をcheckoutし、test/buildを経てtag・Releaseを作成）で正式にReleaseしたものである。engine側のREADMEはこの機能を「PoC」と位置づけているが、これはfont自動選択の対応範囲（Serif/Sansの2系統のみで、太字・斜体・weight・stretch等には未対応）を指すものであり、Release自体が非公式・未完成であることを意味しない。Release自体は非draft・非prereleaseの正式なGitHub Releaseであり、`ENGINE_VERSION === "0.5.0"`、`setFallbackFonts()` のexportを確認したうえで取り込んでいる。
+このRelease（v0.5.1）は、v0.5.0で導入された「PDF自身の`FontDescriptor`/`Flags`によるSerif/Sans判定と、`setFallbackFonts({ sans, serif })` によるfallback font自動選択」を基礎とし、`/FontDescriptor`がinline dictionaryとして書かれている場合にも到達できるよう修正したものを、`idontlovepdf-engine` 側のRelease workflow（`main`をcheckoutし、test/buildを経てtag・Releaseを作成）で正式にReleaseしたものである。engine側のREADMEはSerif/Sans自動選択の機能自体を「PoC」と位置づけているが、これは対応範囲（Serif/Sansの2系統のみで、太字・斜体・weight・stretch等には未対応）を指すものであり、Release自体が非公式・未完成であることを意味しない。Release自体は非draft・非prereleaseの正式なGitHub Releaseであり、`ENGINE_VERSION === "0.5.1"`、`setFallbackFonts()` のexportを確認したうえで取り込んでいる。
 
 ### 取り扱いの原則
 
@@ -54,6 +54,14 @@
   - `ENGINE_VERSION`
 - bundleを手で編集しない。修正が必要な場合は `idontlovepdf-engine` 側で直し、新しいversionをReleaseしてから差し替える。
 - version情報をJavaScriptコードへ書き写さない。実行時のversion表示には `ENGINE_VERSION` を使う。
+
+### v0.5.1 の要点（本体側の設計に関わるもの）
+
+- **実PDF `22550.pdf`（`令和8年度`）で、v0.5.0のSerif/Sans自動選択がBIZ UD明朝ではなくBIZ UDゴシックを選んでいた原因が確定し、修正された。** `22550.pdf` の `/F3` は、`/DescendantFonts` のCIDFont dictionaryをarray内に直接書くinline dictionary（v0.4.3で対応済み）であることに加え、そのCIDFont dictionary自身の `/FontDescriptor` も**inline dictionary**として書かれていた。v0.5.0の`classifyFontResource()`はこの構造を判定できず、`/FontDescriptor`が全く無い場合と区別できないまま`unknown`（→常にBIZ UDゴシック）へ落ちていた。**`/Flags` の値自体に問題はなく、engineがそこへ到達できていなかっただけである。**
+- v0.5.1は、`/FontDescriptor`をindirect referenceとinline dictionaryの両方から読む分岐を追加した。`/Flags`自身の意味づけ（Serif bit判定）は変更していない。新しいPDF parserは追加されていない。
+- **本体側から見える公開APIの追加・変更は無い。** `setFallbackFonts({ sans, serif })` の形は変わっていない。本体側は引き続き、`/FontDescriptor`・`/Flags`・font名・resource名のいずれも読まず、2つのフォントのバイト列をengineへ渡すだけである。
+- engine側のGitHub Actions（`Diagnose real PDF font metrics` workflow）による実PDF `22550.pdf` の診断・編集smoke testで、`/F3`の`/Flags`が`6`（Symbolic(4)+Serif(2)、Serif bit true）であり、`classification: serif`・`selectedRole: serif`となること、`令和 → しょ`でBIZ UD明朝（`BIZUDMincho-Regular`）が実際に埋め込まれること、`令和 → 平成`は既存font経路のまま成功すること、`令和 → しょうわ`はBIZ UD明朝自身の実glyph幅で再判定した結果`FALLBACK_LAYOUT_UNSUPPORTED`（`unsafeReason: fallback-replacement-overflows-slot`）として引き続き拒否されることを確認している。詳細は`idontlovepdf-engine`側の`docs/serif-classification-diagnosis.md`を参照する。
+- 本体側の確認は`docs/feasibility.md`を参照する。開発用サンドボックス環境からは引き続き`www.city.itoman.lg.jp`へ到達できないため（v0.4.2以降、毎回同じegress制約）、`22550.pdf`の`/F3`と同じ構造（inline `/FontDescriptor`、`/Flags 6`、`令和8年度`のTJ/Tj配置）を再現した合成PDFを用いて、本体UI・実engine bundle・実フォントファイルで確認した。
 
 ### v0.5.0 の要点（本体側の設計に関わるもの）
 

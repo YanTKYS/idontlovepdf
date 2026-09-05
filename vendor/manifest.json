@@ -1,16 +1,16 @@
 {
   "$comment": "CI/保守用のmachine-readable manifest。本体runtimeはこのファイルを取得・参照しない。期待値の単一の情報源として、ここと vendor/README.md の内容を一致させる。",
   "tool": {
-    "version": "0.5.0"
+    "version": "0.5.1"
   },
   "engine": {
     "repository": "YanTKYS/idontlovepdf-engine",
-    "version": "0.5.0",
-    "tag": "v0.5.0",
+    "version": "0.5.1",
+    "tag": "v0.5.1",
     "asset": "idontlovepdf-engine.js",
     "path": "vendor/idontlovepdf-engine.js",
-    "sha256": "58696948d34ac90485222b44c434f9cfefa551e327dc48b3f47f75f260765895",
-    "size": 541649
+    "sha256": "d7677aeb71fd3a8d05c33efb82629787cee4d2f2d869051ef0bea1b210f8bb77",
+    "size": 544212
   },
   "fonts": {
     "gothic": {
